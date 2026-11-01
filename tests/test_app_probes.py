@@ -4,6 +4,7 @@ import pytest
 from conftest import DownPool, asgi_client
 
 from agents_usage.api.app import PREFIX, create_app, create_ingest_app, create_service_app
+from agents_usage.api.usage import ProbeTrigger
 
 
 @pytest.fixture
@@ -55,8 +56,10 @@ async def test_service_app_needs_token(settings):
 
 
 def test_probe_trigger_only_on_the_service_app(settings):
-    assert create_app(settings, DownPool()).state.probe_trigger is False
-    assert create_service_app(settings, DownPool(), ["t"]).state.probe_trigger is True
+    assert create_app(settings, DownPool()).state.probe_trigger is None
+    service = create_service_app(settings, DownPool(), ["t"])
+    assert isinstance(service.state.probe_trigger, ProbeTrigger)
+    assert service.state.probe_trigger.after.total_seconds() == settings.probe_after_seconds
 
 
 async def test_ingest_app_needs_token_but_not_health(settings):
@@ -73,4 +76,4 @@ async def test_ingest_app_needs_token_but_not_health(settings):
 
 
 def test_no_probe_trigger_on_the_ingest_app(settings):
-    assert create_ingest_app(settings, DownPool(), ["i"]).state.probe_trigger is False
+    assert create_ingest_app(settings, DownPool(), ["i"]).state.probe_trigger is None

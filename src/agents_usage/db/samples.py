@@ -12,6 +12,12 @@ from agents_usage.parser import Window
 
 
 @dataclass(frozen=True)
+class SampleRow:
+    observed_at: datetime
+    agent: str | None
+
+
+@dataclass(frozen=True)
 class SampleRecord:
     observed_at: datetime
     agent: str | None
@@ -44,3 +50,12 @@ async def prune(conn: AsyncConnection, older_than: datetime) -> int:
     """Delete the samples observed before `older_than` (their windows cascade); the count."""
     cur = await conn.execute("DELETE FROM samples WHERE observed_at < %s", (older_than,))
     return cur.rowcount
+
+
+async def latest(conn: AsyncConnection) -> SampleRow | None:
+    """The newest sample."""
+    cur = await conn.execute(
+        "SELECT observed_at, agent FROM samples ORDER BY observed_at DESC LIMIT 1"
+    )
+    row = await cur.fetchone()
+    return None if row is None else SampleRow(*row)

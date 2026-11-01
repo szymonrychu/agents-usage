@@ -14,7 +14,7 @@ from psycopg_pool import AsyncConnectionPool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from agents_usage.api import ingest
+from agents_usage.api import ingest, usage
 from agents_usage.api.errors import ApiError, error_response
 from agents_usage.settings import Settings
 
@@ -59,17 +59,21 @@ class SourceAllowlist:
 
 
 def _build_app(
-    settings: Settings, pool: AsyncConnectionPool, *, probe_trigger: bool = False
+    settings: Settings,
+    pool: AsyncConnectionPool,
+    *,
+    probe_trigger: usage.ProbeTrigger | None = None,
 ) -> FastAPI:
-    """The app shared by every listener; routers are mounted by the tasks that add them.
+    """The app shared by every listener; each listener mounts its routers.
 
-    `probe_trigger` is True only on the service listener: reading `current` there may wake the
+    `probe_trigger` is set only on the service listener: reading `current` there may wake the
     prober.
     """
     app = FastAPI(title="agents-usage", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.settings = settings
     app.state.pool = pool
     app.state.probe_trigger = probe_trigger
+    app.state.background = set()
 
     @app.exception_handler(ApiError)
     async def _api_error(_: Request, exc: ApiError) -> JSONResponse:
@@ -107,6 +111,7 @@ def _build_app(
 def create_app(settings: Settings, pool: AsyncConnectionPool) -> FastAPI:
     """The ui app: every route behind the source allowlist."""
     app = _build_app(settings, pool)
+    app.include_router(usage.router, prefix=PREFIX)
     app.add_middleware(SourceAllowlist, networks=settings.api_networks())
     return app
 
@@ -114,7 +119,10 @@ def create_app(settings: Settings, pool: AsyncConnectionPool) -> FastAPI:
 def create_service_app(settings: Settings, pool: AsyncConnectionPool, tokens: list[str]) -> FastAPI:
     """The service app (the orchestrator's usage gate): bearer service tokens instead of the
     allowlist, and reading `current` here is what wakes the prober."""
-    app = _build_app(settings, pool, probe_trigger=True)
+    app = _build_app(
+        settings, pool, probe_trigger=usage.ProbeTrigger(pool, settings.probe_after_seconds)
+    )
+    app.include_router(usage.router, prefix=PREFIX)
     app.add_middleware(ServiceTokenGate, tokens=tokens)
     return app
 

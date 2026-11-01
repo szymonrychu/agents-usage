@@ -32,14 +32,72 @@ The `usage` entry point (`uv run usage <command>`):
 
 The watcher command is added with its task.
 
-## Ingest
+## API
 
-The ingest listener (port `USAGE_INGEST_PORT`, only when `USAGE_INGEST_TOKENS_FILE` is set) serves `POST /usage/v1/samples`, `/healthz` and `/readyz` and nothing else, behind the ingest bearer token. It is the one writer of `samples` and `sample_windows`. The agents' token can only add samples; the UI and service listeners refuse the route, and the ingest tokens must differ from the service tokens.
+Base path `/usage/v1`, JSON in and out. Three listeners serve it, each with only its own routes:
+
+- the UI port (`USAGE_HTTP_PORT`) serves the read routes to peers inside `USAGE_ALLOWED_CIDRS` (the SSO proxy; forwarding headers are never read);
+- the service port (`USAGE_SERVICE_PORT`, when `USAGE_SERVICE_TOKENS_FILE` is set) serves the same read routes behind a bearer service token (the orchestrator's usage gate);
+- the ingest port (`USAGE_INGEST_PORT`, when `USAGE_INGEST_TOKENS_FILE` is set) serves only `POST /usage/v1/samples`, behind the agents' ingest token.
+
+`GET /healthz` and `GET /readyz` (`503 not_ready` when the database is unreachable) sit outside the base path on every listener and are exempt from the allowlist and the tokens. The machine-readable contract is `openapi.json`, regenerated with `uv run python -m agents_usage.api.openapi > openapi.json`; a test fails when it drifts from the app or when a route is missing from this section.
+
+Every error has the shape `{"error": {"code": "<code>", "message": "<text>"}}`. Codes: `unauthorized` (401; bearer listeners), `forbidden` (403; UI listener), `not_found` (404), `method_not_allowed` (405), `too_large` (413), `invalid_request` (422; body or query fails validation) and `no_windows` (422; ingest).
+
+Every percent is on the 0-100 scale. The two metrics seen so far are `five_hour` and `seven_day`; clients must ignore metrics they do not know.
+
+### `GET /usage/v1/current`
+
+The usage now, one entry per metric:
+
+```json
+{
+  "windows": {
+    "five_hour": {"percent": 23.5, "resets_at": "2026-11-07T03:00:00Z", "observed_at": "2026-11-07T01:58:12Z", "stale": false, "source": "statusline"},
+    "seven_day": {"percent": 22.0, "resets_at": "2026-11-07T11:00:00Z", "observed_at": "2026-11-07T01:58:12Z", "stale": false, "source": "statusline"}
+  },
+  "last_sample": {"at": "2026-11-07T01:58:12Z", "agent": "agent-x-0"},
+  "last_probe": {"at": "2026-11-07T00:10:03Z", "ok": true, "error": null}
+}
+```
+
+- Per metric the newest window (the latest `resets_at`) is reported. Usage inside a window only grows, so `percent` is the highest reading of that window (readings of the same window are grouped by `resets_at` to the minute) and an idle agent's older re-send never lowers it. `observed_at` and `source` (`statusline` or `probe`) are those of the newest reading of the window.
+- A window that has reset (`resets_at` at or before now) is dropped; a metric with no live window is absent. Nothing yet gives `{"windows": {}, "last_sample": null, "last_probe": null}`.
+- `stale` is decided here, once: true when the reading is older than `USAGE_STALE_SECONDS`. Callers (the orchestrator's gate) trust it; a stale or absent metric never gates.
+- `last_sample` is the newest statusLine sample (`agent` is null when the sender gave none). `last_probe` is the newest probe attempt, failed or not; `error` is `timeout`, `cli_exit`, `cli_error` or `no_rate_limit_event` when `ok` is false, never the stored detail.
+- On the service listener only, a call also sends a NOTIFY to the prober when the newest reading is older than `USAGE_PROBE_AFTER_SECONDS` or there is none (at most once a minute per process; the prober decides whether a probe is due). The notification is fire and forget: it never delays or fails the answer. The UI listener never wakes the prober.
+
+### `GET /usage/v1/history`
+
+The readings over a range, oldest first, downsampled:
+
+```
+GET /usage/v1/history?from=2026-10-31T00:00:00Z&to=2026-11-07T00:00:00Z&metric=seven_day&max_points=500
+```
+
+```json
+{
+  "from": "2026-10-31T00:00:00Z",
+  "to": "2026-11-07T00:00:00Z",
+  "bucket_seconds": 1210,
+  "points": [
+    {"observed_at": "2026-11-06T23:40:11Z", "metric": "seven_day", "percent": 21.5, "resets_at": "2026-11-07T11:00:00Z", "source": "statusline"},
+    {"observed_at": "2026-11-07T01:58:12Z", "metric": "seven_day", "percent": 22.0, "resets_at": "2026-11-07T11:00:00Z", "source": "probe"}
+  ]
+}
+```
+
+- Query: `from` and `to` (ISO 8601; a time without a zone is UTC; the range is `from` inclusive to `to` exclusive), default `to` = now and `from` = `to` minus 7 days; `metric` (optional, `^[a-z0-9_]{1,64}$`, default every metric); `max_points` (10..1000, default 500). `from` must be before `to` and the range at most 100 days, else `422 invalid_request`.
+- Downsampling: `bucket_seconds = max(1, ceil((to - from) / max_points))`. Per metric and bucket only the peak reading (highest `percent`, ties to the latest) is returned, as the real stored reading, so a range holds at most `max_points` points per metric and a short range comes back unchanged. The server answers with one indexed query over the `readings` view.
+
+### `POST /usage/v1/samples`
+
+The agents push their statusLine `rate_limits` here (ingest listener only, behind the ingest bearer token). It is the one writer of `samples` and `sample_windows`. The agents' token can only add samples; the UI and service listeners refuse the route, and the ingest tokens must differ from the service tokens.
 
 Body (at most 8192 bytes, checked while streaming; unknown keys are refused):
 
 ```json
-{"agent": "agent-x-0", "cli_version": "2.1.304", "rate_limits": {"five_hour": {"used_percentage": 23.5, "resets_at": 1794020400}}}
+{"agent": "agent-x-0", "cli_version": "2.1.304", "rate_limits": {"five_hour": {"used_percentage": 23.5, "resets_at": 1794020400}, "seven_day": {"used_percentage": 22, "resets_at": 1794049200}}}
 ```
 
 - `agent`: optional, `^[A-Za-z0-9._-]{1,128}$`; `cli_version`: optional, at most 64 characters; `rate_limits`: the statusLine object as received.

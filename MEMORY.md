@@ -2,6 +2,16 @@
 
 Lessons that outlive a session. Newest first.
 
+## 2026-11-01 - current and history API (claude-usage-monitor A4)
+
+- `current` = the highest reading of the newest window per metric: usage inside a window only grows, so an idle agent's older re-send never lowers it. Readings are grouped by `resets_at` truncated to the minute (resets jitter by seconds between senders); the group with the latest `resets_at` wins and its `observed_at`/`source` are those of its newest reading. A window with `resets_at <= now` is dropped (the orchestrator pins the same boundary).
+- Staleness is decided here once (`now - observed_at > USAGE_STALE_SECONDS`); the orchestrator trusts `stale` and never recomputes it.
+- Only the service listener's `current` wakes the prober, by NOTIFY, as a fire-and-forget task, at most once a minute per process: the gate is "something asks" (the orchestrator's usage gate), and a person looking at the web UI Usage page is not. The UI app has no trigger (`app.state.probe_trigger` is None), so the page never costs a probe. A failed NOTIFY is logged and swallowed; the mark is set before the await so concurrent requests send one.
+- History keeps the peak reading per metric and bucket (highest percent, ties to the latest) as the real stored row, not an average: the chart must not hide a spike. `bucket_seconds = max(1, ceil(range / max_points))`, so a range never exceeds `max_points` points per metric and a short range is returned unchanged. The range is `[from, to)`, at most 100 days (retention is 90), default last 7 days.
+- `newest_at` reads `max(observed_at)` of `samples` and of ok `probes` (two index probes) instead of the `readings` view, whose UNION ALL over joins cannot answer a max from an index. Equivalent because ingest refuses a sample without windows. The EXPLAIN test asserts no Seq Scan on `samples` or `probes` for the 90-day history and for `current`'s queries; the planner may still hash join and scan the narrow `sample_windows`/`probe_windows` tables, which is not asserted.
+- Every served instant is converted to UTC in the response models, whatever the database session time zone.
+- `openapi.json` is one document for all three listeners (the ingest route is documented by hand because the route reads the raw request to cap the body while streaming); a test pins routes per listener, the document and the README.
+
 ## 2026-11-01 - lazy prober (claude-usage-monitor A3)
 
 - Never on a timer (user, mx-99 #624): the prober LISTENs on `agents_usage_probe` and starts claude only after a notification and only when due. Due = the newest reading (any source) is older than `USAGE_PROBE_AFTER_SECONDS` (or none) AND the newest attempt started more than `USAGE_PROBE_MIN_INTERVAL_SECONDS` ago (or none); failed attempts count, so a broken token costs at most one run per interval. No startup probe either.
