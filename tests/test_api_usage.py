@@ -98,6 +98,26 @@ async def test_current_drops_a_reset_window(client, pool):
     assert (await client.get(CURRENT)).json()["windows"] == {}
 
 
+async def test_newest_at_ignores_a_probe_without_windows(pool):
+    now = now_s()
+    resets = now + timedelta(days=1)
+    async with pool.connection() as conn:
+        assert await readings.newest_at(conn) is None
+    await add_probe(pool, now - timedelta(minutes=5))  # ok, but the parser left no windows
+    await add_probe(pool, now - timedelta(minutes=1), ok=False)
+    async with pool.connection() as conn:
+        assert await readings.newest_at(conn) is None
+    await add_probe(pool, now - timedelta(hours=1), seven_day=(20.0, resets))
+    await add_probe(pool, now - timedelta(seconds=30))
+    async with pool.connection() as conn:
+        assert await readings.newest_at(conn) == now - timedelta(hours=1)
+        cur = await conn.execute("SELECT max(observed_at) FROM readings")
+        assert (await cur.fetchone())[0] == now - timedelta(hours=1)
+    await add_sample(pool, now - timedelta(minutes=2), seven_day=(21.0, resets))
+    async with pool.connection() as conn:
+        assert await readings.newest_at(conn) == now - timedelta(minutes=2)
+
+
 async def test_current_mixes_sources(client, pool):
     now = now_s()
     resets = now + timedelta(days=1)
@@ -247,6 +267,10 @@ def fill(conn) -> None:
         conn.execute(f"ANALYZE {table}")
 
 
+# A plain, index-only or bitmap scan of one of the observed_at indexes.
+INDEX_SCAN = r"(Scan using|Bitmap Index Scan on) (samples_observed_at_idx|probes_observed_at_idx)"
+
+
 def test_history_index_scan(conn):
     fill(conn)
     now = datetime.now(UTC)
@@ -256,7 +280,7 @@ def test_history_index_scan(conn):
         row[0] for row in conn.execute("EXPLAIN " + readings.HISTORY_SQL, params).fetchall()
     )
     assert not re.search(r"Seq Scan on (samples|probes)\b", plan), plan
-    assert re.search(r"Scan using (samples_observed_at_idx|probes_observed_at_idx)", plan), plan
+    assert re.search(INDEX_SCAN, plan), plan
 
 
 def test_current_queries_use_the_indexes(conn):
@@ -268,6 +292,8 @@ def test_current_queries_use_the_indexes(conn):
     ):
         plan = "\n".join(row[0] for row in conn.execute("EXPLAIN " + sql, params).fetchall())
         assert not re.search(r"Seq Scan on (samples|probes)\b", plan), plan
+        if sql is readings.NEWEST_SQL:
+            assert re.search(INDEX_SCAN, plan), plan
 
 
 async def test_service_listener(settings, pool, client_service):

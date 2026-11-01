@@ -48,12 +48,16 @@ WHERE observed_at > %(since)s AND resets_at > %(now)s
 GROUP BY metric, date_trunc('minute', resets_at)
 """
 
-# The newest reading's time without scanning the view: both tables have an observed_at index,
-# and a statusLine sample always holds at least one window (the ingest refuses others).
+# The newest reading's time without scanning the view: both tables have an observed_at index.
+# It must agree with the view, so a probe counts only when it is ok and has a window (the parser
+# can leave an ok probe without windows); a statusLine sample always has one, the ingest refuses
+# others.
 NEWEST_SQL = """
 SELECT greatest(
     (SELECT max(observed_at) FROM samples),
-    (SELECT max(observed_at) FROM probes WHERE ok)
+    (SELECT p.observed_at FROM probes p
+     WHERE p.ok AND EXISTS (SELECT 1 FROM probe_windows w WHERE w.probe_id = p.id)
+     ORDER BY p.observed_at DESC LIMIT 1)
 )
 """
 

@@ -125,6 +125,16 @@ async def test_ui_current_never_triggers(settings, stale_reads):
     assert pool.notifies == []
 
 
+async def test_ui_current_does_not_read_the_newest_time(settings, stale_reads, monkeypatch):
+    async def forbidden(conn):
+        raise AssertionError("newest_at is only needed to decide a probe request")
+
+    monkeypatch.setattr(usage.readings, "newest_at", forbidden)
+    async with asgi_client(create_app(settings, RecordingPool())) as http:
+        response = await http.get(f"{PREFIX}/current")
+    assert response.status_code == 200
+
+
 async def test_service_current_triggers(settings, stale_reads):
     pool = RecordingPool()
     app = create_service_app(settings, pool, ["t"])

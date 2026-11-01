@@ -125,14 +125,15 @@ def _spawn(app: FastAPI, work: Awaitable[object]) -> None:
 async def current(request: Request) -> CurrentView:
     app = request.app
     now = datetime.now(UTC)
+    trigger = app.state.probe_trigger
     async with app.state.pool.connection() as conn:
         groups = await readings.window_groups(conn, now)
-        newest_at = await readings.newest_at(conn)
+        newest_at = None if trigger is None else await readings.newest_at(conn)
         last_sample = await samples.latest(conn)
         last_probe = await probes.latest(conn)
     view = current_view(groups, last_sample, last_probe, now, app.state.settings.stale_seconds)
-    if app.state.probe_trigger is not None:
-        _spawn(app, app.state.probe_trigger.maybe(newest_at, now))
+    if trigger is not None:
+        _spawn(app, trigger.maybe(newest_at, now))
     return view
 
 
