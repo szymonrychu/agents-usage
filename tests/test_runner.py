@@ -1,10 +1,13 @@
 """The probe's claude child: argv, environment and the process runner (no database)."""
 
+import asyncio
 import json
 import stat
 import sys
 import time
 from pathlib import Path
+
+import pytest
 
 from agents_usage.parser import parse_stream
 from agents_usage.runner import (
@@ -119,6 +122,21 @@ async def test_run_cli_timeout_kills_group(tmp_path):
     deadline = time.monotonic() + 5
     while not gone(grandchild) and time.monotonic() < deadline:
         time.sleep(0.05)
+    assert gone(grandchild)
+
+
+async def test_run_cli_cancel_kills_group(tmp_path):
+    pid_file = tmp_path / "grandchild.pid"
+    argv, env = fake("hang", FAKE_PID_FILE=str(pid_file))
+    task = asyncio.create_task(run_cli(argv, env, str(tmp_path), 60))
+    await asyncio.sleep(0.5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    grandchild = int(pid_file.read_text())
+    deadline = time.monotonic() + 5
+    while not gone(grandchild) and time.monotonic() < deadline:
+        await asyncio.sleep(0.05)
     assert gone(grandchild)
 
 

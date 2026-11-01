@@ -49,7 +49,7 @@ Body (at most 8192 bytes, checked while streaming; unknown keys are refused):
 
 ## Prober
 
-The fallback source when no agent sends statusLine samples. There is no timer: the prober LISTENs on the Postgres channel `agents_usage_probe` and does nothing until a notification arrives. Requests are handled one at a time; requests that arrive during a probe are coalesced into one more check. A probe runs only when it is due:
+The fallback source when no agent sends statusLine samples. There is no poll timer: the prober LISTENs on the Postgres channel `agents_usage_probe` and does nothing until a notification arrives. Requests are handled one at a time; requests that arrive during a probe are coalesced into one more check. A probe runs only when it is due:
 
 - the newest reading (statusLine sample or successful probe) is older than `USAGE_PROBE_AFTER_SECONDS`, or there is none, and
 - the newest probe attempt, failed or not, started more than `USAGE_PROBE_MIN_INTERVAL_SECONDS` ago, or there is none.
@@ -65,7 +65,7 @@ claude -p 'Reply with the single word ok.' --model haiku --output-format stream-
 - The token is read from `USAGE_CLAUDE_TOKEN_FILE` on every probe, so a rotated Secret needs no restart. It is never logged, and every stored text (detail, raw event, CLI version) has it replaced by `[redacted]`.
 - The child runs in its own process group, killed with SIGKILL after `USAGE_PROBE_TIMEOUT_SECONDS`; stdout is capped at 1 MiB and stderr at 64 KiB (the tails are kept).
 - Every attempt is stored in `probes` (windows in `probe_windows`; the prober is their only writer): `ok`, or an error `timeout`, `cli_error` (an error result line, or an empty or unreadable token file), `cli_exit` (a non-zero exit, or the child could not start) or `no_rate_limit_event`, with a redacted detail of at most 2000 characters. A rate limit event makes the probe ok whatever the exit code. Successful probes show up in the `readings` view with source `probe`.
-- Probes older than `USAGE_RETENTION_DAYS` are pruned after a probe, at most once an hour.
+- Probes older than `USAGE_RETENTION_DAYS` are pruned when the prober starts and then once an hour, whether or not anyone asks or a probe runs (the timer only deletes rows; it never runs claude).
 
 ## Configuration
 

@@ -1,9 +1,11 @@
 """The lazy probe: run claude once when a reader asks and every reading is old.
 
-There is no timer. The prober waits on the `agents_usage_probe` channel (the api notifies it
-from the service listener's `current`), handles one request at a time, and probes only when
-`probe_due` says so. The OAuth token is read from its file on every probe, passed only to the
-claude child, never logged, and redacted from every stored text.
+There is no poll timer: claude only runs on a request. The prober waits on the
+`agents_usage_probe` channel (the api notifies it from the service listener's `current`),
+handles one request at a time, and probes only when `probe_due` says so. Old probes are pruned
+hourly on the prober's own loop, since requests stop once the statusLine samples are fresh.
+The OAuth token is read from its file on every probe, passed only to the claude child, never
+logged, and redacted from every stored text.
 """
 
 from __future__ import annotations
@@ -199,12 +201,15 @@ async def run_prober(
     *,
     requests: AsyncIterator[str] | None = None,
     handle: Handle = handle_request,
+    prune_every: float = PRUNE_EVERY_SECONDS,
 ) -> None:
     """Handle probe requests one at a time until `stop` is set.
 
     Requests that arrive while one is handled are coalesced into one more call. A failing
     `handle` is logged and the loop goes on; a failing `requests` stream ends the loop with its
-    error. After a probe, old probes are pruned at most hourly.
+    error. Old probes are pruned on start and then every `prune_every` seconds, whether or not
+    anything is asked or probed: requests stop once the statusLine samples are fresh, and the
+    prober is the only writer of `probes`. The prune timer never runs claude.
     """
     if requests is None:
         requests = listen(settings.database_url.get_secret_value(), PROBE_CHANNEL)
@@ -220,25 +225,28 @@ async def run_prober(
     log.info("waiting for probe requests on %s", PROBE_CHANNEL)
     try:
         while True:
+            if last_prune is None or time.monotonic() - last_prune >= prune_every:
+                last_prune = time.monotonic()
+                await _prune(pool, settings)
             waiting = asyncio.create_task(pending.wait())
-            await asyncio.wait({waiting, stopping, reader}, return_when=asyncio.FIRST_COMPLETED)
+            await asyncio.wait(
+                {waiting, stopping, reader},
+                timeout=max(0.0, prune_every - (time.monotonic() - last_prune)),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
             waiting.cancel()
             if stop.is_set():
                 return
             if not pending.is_set():
-                reader.result()  # the stream ended: re-raise its error, if any
-                return
+                if reader.done():
+                    reader.result()  # the stream ended: re-raise its error, if any
+                    return
+                continue  # the prune timer fired
             pending.clear()
             try:
-                probed = await handle(pool, settings)
+                await handle(pool, settings)
             except Exception:
                 log.exception("probe request failed")
-                continue
-            if probed and (
-                last_prune is None or time.monotonic() - last_prune >= PRUNE_EVERY_SECONDS
-            ):
-                last_prune = time.monotonic()
-                await _prune(pool, settings)
     finally:
         for task in (reader, stopping):
             task.cancel()
