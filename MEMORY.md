@@ -2,6 +2,19 @@
 
 Lessons that outlive a session. Newest first.
 
+## 2026-11-01 - lazy prober (claude-usage-monitor A3)
+
+- Never on a timer (user, mx-99 #624): the prober LISTENs on `agents_usage_probe` and starts claude only after a notification and only when due. Due = the newest reading (any source) is older than `USAGE_PROBE_AFTER_SECONDS` (or none) AND the newest attempt started more than `USAGE_PROBE_MIN_INTERVAL_SECONDS` ago (or none); failed attempts count, so a broken token costs at most one run per interval. No startup probe either.
+- Single-flight twice over: the advisory singleton `agents-usage-prober` keeps one prober process, and `run_prober` handles one request at a time, coalescing everything that arrived meanwhile into one more `handle` call. The burst guarantee does not depend on the coalescing: the first attempt's row makes the next check not due.
+- argv: `--tools ""` (no tools), `--strict-mcp-config` (no MCP servers from anywhere), `--no-session-persistence` (no session file in HOME), a one-line `--system-prompt` (smallest request that still returns the `rate_limit_event`). No `--bare`: it restricts auth to API keys, and the probe uses the OAuth token. All flags checked against `claude --help` of 2.1.304.
+- Env built from scratch (PATH, HOME, CLAUDE_CODE_OAUTH_TOKEN, DISABLE_AUTOUPDATER=1), never `os.environ` plus extras: the database URL must not reach the child. cwd is `USAGE_CLAUDE_HOME` so no project files or hooks are read. stdin is /dev/null.
+- The token file is read on every probe (Secret rotation needs no restart); empty or unreadable stores `cli_error` "claude token file unreadable or empty" without running the child. The token is never logged; `redact` covers detail, the raw event (every string, keys too) and the CLI version. stderr is kept from its tail, so `redact` also replaces a token suffix (4+ characters) cut at the start of the text.
+- The child gets its own session (process group). SIGKILL to the group on timeout and on cancellation (shutdown), and also after a normal exit so no straggler holding the token survives. Pipe reads get 5 s after the child is gone (a grandchild that escaped the group could hold them), then what was read is used.
+- Classification order: timeout, then event present (ok, even with a non-zero exit), then an `is_error` result line (`cli_error`, the result text as detail), then a non-zero exit (`cli_exit`, stderr tail; also when the child could not be started), else `no_rate_limit_event`. A real 2.1.304 run with an invalid token gives `cli_error` "Failed to authenticate. API Error: 401 Invalid bearer token".
+- One log line per probe: id, ok with metric percents and cost, or the error code and duration. The detail is stored, not logged.
+- The prober writes only `probes`/`probe_windows`; pruning (retention by `observed_at`) runs after a probe, at most hourly, in its own try/except.
+- runtime entrypoints are now covered by `tests/test_entrypoints.py` (ported from agents-schedule): help, exit 78, X-Forwarded-For ignored (no database, a `DownPool`), and, with Postgres, migrate, api SIGTERM, the token listeners, prober standby takeover and a notified end-to-end probe through a fake `claude`.
+
 ## 2026-11-01 - samples ingest (claude-usage-monitor A8)
 
 - Ingest runs on its own listener and token so the agents' token can only add samples and the read tokens (UI allowlist, service tokens) cannot post; `api_main` loads both token files before opening anything and exits 78 when a token is in both, when a file is empty or unreadable.

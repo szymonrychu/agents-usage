@@ -28,8 +28,9 @@ The `usage` entry point (`uv run usage <command>`):
 
 - `usage migrate` - apply the schema migrations to the service's own database and exit.
 - `usage api` - serve the HTTP listeners: the UI port, the service port when `USAGE_SERVICE_TOKENS_FILE` is set and the ingest port when `USAGE_INGEST_TOKENS_FILE` is set. A token file that is empty or unreadable, or a token present in both files, makes the process exit 78.
+- `usage prober` - wait for probe requests and run the lazy claude probe when one is due (single instance through the advisory lock `agents-usage-prober`). Exits 78 when `USAGE_CLAUDE_TOKEN_FILE` is unset.
 
-The prober and the watcher commands are added with their tasks.
+The watcher command is added with its task.
 
 ## Ingest
 
@@ -45,6 +46,26 @@ Body (at most 8192 bytes, checked while streaming; unknown keys are refused):
 - `202 {"windows": n}`: n windows were stored. `413 too_large`: the body exceeds the cap. `422 no_windows`: no window in `rate_limits` was usable. `422 invalid_request`: any other bad body. `401`: no or a wrong ingest token.
 - The sample time is the server's receive time, never a client clock. `rate_limits` is kept verbatim as `raw`.
 - Bodies and tokens are never logged. Samples older than `USAGE_RETENTION_DAYS` are pruned after an insert, at most once an hour.
+
+## Prober
+
+The fallback source when no agent sends statusLine samples. There is no timer: the prober LISTENs on the Postgres channel `agents_usage_probe` and does nothing until a notification arrives. Requests are handled one at a time; requests that arrive during a probe are coalesced into one more check. A probe runs only when it is due:
+
+- the newest reading (statusLine sample or successful probe) is older than `USAGE_PROBE_AFTER_SECONDS`, or there is none, and
+- the newest probe attempt, failed or not, started more than `USAGE_PROBE_MIN_INTERVAL_SECONDS` ago, or there is none.
+
+One probe is one haiku reply with no tools and no MCP servers:
+
+```
+claude -p 'Reply with the single word ok.' --model haiku --output-format stream-json --verbose \
+  --tools "" --strict-mcp-config --no-session-persistence --system-prompt 'Reply with the single word ok.'
+```
+
+- The child environment is built from scratch: `PATH`, `HOME=$USAGE_CLAUDE_HOME`, `CLAUDE_CODE_OAUTH_TOKEN` and `DISABLE_AUTOUPDATER=1`, nothing else (the database URL never reaches it). Its working directory is `USAGE_CLAUDE_HOME`, created 0700 when missing.
+- The token is read from `USAGE_CLAUDE_TOKEN_FILE` on every probe, so a rotated Secret needs no restart. It is never logged, and every stored text (detail, raw event, CLI version) has it replaced by `[redacted]`.
+- The child runs in its own process group, killed with SIGKILL after `USAGE_PROBE_TIMEOUT_SECONDS`; stdout is capped at 1 MiB and stderr at 64 KiB (the tails are kept).
+- Every attempt is stored in `probes` (windows in `probe_windows`; the prober is their only writer): `ok`, or an error `timeout`, `cli_error` (an error result line, or an empty or unreadable token file), `cli_exit` (a non-zero exit, or the child could not start) or `no_rate_limit_event`, with a redacted detail of at most 2000 characters. A rate limit event makes the probe ok whatever the exit code. Successful probes show up in the `readings` view with source `probe`.
+- Probes older than `USAGE_RETENTION_DAYS` are pruned after a probe, at most once an hour.
 
 ## Configuration
 

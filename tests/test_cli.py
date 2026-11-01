@@ -52,3 +52,15 @@ def test_unknown_command_exits_2(argv, capsys):
     assert exc.value.code == 2
     captured = capsys.readouterr()
     assert "usage" in (captured.out + captured.err).lower()
+
+
+def test_prober_registered():
+    parser = cli.build_parser()
+    sub = next(a for a in parser._actions if a.dest == "command")
+    assert "prober" in sub.choices
+
+
+def test_prober_needs_token_file(monkeypatch, capsys):
+    monkeypatch.setenv("USAGE_DATABASE_URL", "postgresql://u:p@db.invalid/usage")
+    assert cli.main(["prober"]) == 78
+    assert "USAGE_CLAUDE_TOKEN_FILE: required for the prober" in capsys.readouterr().err

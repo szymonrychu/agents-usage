@@ -15,6 +15,7 @@ from agents_common.service_gate import load_tokens
 from psycopg_pool import AsyncConnectionPool
 from starlette.types import ASGIApp
 
+from agents_usage import prober
 from agents_usage.api.app import create_app, create_ingest_app, create_service_app
 from agents_usage.cli import EXIT_CONFIG
 from agents_usage.settings import Settings
@@ -22,6 +23,7 @@ from agents_usage.settings import Settings
 log = logging.getLogger(__name__)
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
+PROBER_LOCK = "agents-usage-prober"
 
 SingletonBody = Callable[[Settings, AsyncConnectionPool, asyncio.Event], Awaitable[None]]
 
@@ -158,3 +160,15 @@ def _run_singleton(settings: Settings, lock_name: str, body: SingletonBody) -> i
             grace_seconds=settings.shutdown_grace_seconds,
         )
     )
+
+
+async def _prober_body(settings: Settings, pool: AsyncConnectionPool, stop: asyncio.Event) -> None:
+    await prober.run_prober(pool, settings, stop)
+
+
+def prober_main(settings: Settings) -> int:
+    """Run the lazy prober while holding its lock; exit 78 without a claude token file."""
+    if not settings.claude_token_file:
+        print("USAGE_CLAUDE_TOKEN_FILE: required for the prober", file=sys.stderr)
+        return EXIT_CONFIG
+    return _run_singleton(settings, PROBER_LOCK, _prober_body)

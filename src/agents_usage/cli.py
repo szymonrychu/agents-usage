@@ -81,8 +81,15 @@ def _api(settings: Settings) -> int:
     return runtime.api_main(settings)
 
 
+def _prober(settings: Settings) -> int:
+    from agents_usage import runtime
+
+    return runtime.prober_main(settings)
+
+
 register("migrate", configured(_migrate), "apply the schema migrations and exit")
 register("api", configured(_api), "serve the http api")
+register("prober", configured(_prober), "run the lazy claude usage probe when the api asks")
 
 
 if __name__ == "__main__":
