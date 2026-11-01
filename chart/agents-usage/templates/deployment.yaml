@@ -1,0 +1,173 @@
+{{- $tag := default .Chart.AppVersion .Values.image.tag }}
+{{- $image := printf "%s:%s" .Values.image.repository $tag }}
+{{- $settingsSum := include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+{{- /* The prober and the watcher are singletons (advisory lock): one replica, never two pods at once. */ -}}
+{{- range $component := list "api" "prober" "watcher" }}
+{{- $cfg := index $.Values.components $component }}
+{{- $labels := dict "context" $ "component" $component }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agents-usage.fullname" $ }}-{{ $component }}
+  labels:
+    {{- include "agents-usage.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $component }}
+spec:
+  {{- if eq $component "api" }}
+  replicas: {{ $cfg.replicas | default 1 }}
+  {{- else }}
+  replicas: 1
+  strategy:
+    type: Recreate
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "agents-usage.componentLabels" $labels | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/settings: {{ $settingsSum }}
+        {{- with $cfg.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "agents-usage.labels" $ | nindent 8 }}
+        app.kubernetes.io/component: {{ $component }}
+        {{- with $.Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- include "agents-usage.imagePullSecrets" $ | nindent 6 }}
+      serviceAccountName: {{ include "agents-usage.serviceAccountName" $ }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ $.Values.terminationGracePeriodSeconds }}
+      {{- with $.Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        - name: migrate
+          {{- with $.Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          image: {{ $image | quote }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          command: ["usage"]
+          args: ["migrate"]
+          {{- include "agents-usage.env" $ | nindent 10 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: {{ $component }}
+          {{- with $.Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          image: {{ $image | quote }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          command: ["usage"]
+          args: [{{ $component | quote }}]
+          {{- include "agents-usage.env" $ | nindent 10 }}
+          {{- include "agents-usage.componentEnv" $labels | nindent 12 }}
+          {{- if eq $component "api" }}
+          ports:
+            - name: http
+              containerPort: {{ $cfg.port }}
+              protocol: TCP
+            {{- if $.Values.serviceListener.enabled }}
+            - name: service
+              containerPort: {{ $.Values.serviceListener.port }}
+              protocol: TCP
+            {{- end }}
+            {{- if $.Values.ingestListener.enabled }}
+            - name: ingest
+              containerPort: {{ $.Values.ingestListener.port }}
+              protocol: TCP
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ $cfg.port }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: {{ $cfg.port }}
+          {{- end }}
+          {{- with $cfg.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if eq $component "prober" }}
+            - name: claude-token
+              mountPath: {{ include "agents-usage.claudeDir" $ }}
+              readOnly: true
+            {{- else if eq $component "watcher" }}
+            - name: orchestrator-token
+              mountPath: {{ include "agents-usage.orchestratorDir" $ }}
+              readOnly: true
+            {{- else }}
+            {{- if $.Values.serviceListener.enabled }}
+            - name: service-tokens
+              mountPath: {{ include "agents-usage.serviceTokensDir" $ }}
+              readOnly: true
+            {{- end }}
+            {{- if $.Values.ingestListener.enabled }}
+            - name: ingest-tokens
+              mountPath: {{ include "agents-usage.ingestTokensDir" $ }}
+              readOnly: true
+            {{- end }}
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if eq $component "prober" }}
+        - name: claude-token
+          secret:
+            secretName: {{ include "agents-usage.claudeSecretName" $ }}
+            items:
+              - key: {{ include "agents-usage.claudeSecretKey" $ }}
+                path: token
+        {{- else if eq $component "watcher" }}
+        - name: orchestrator-token
+          secret:
+            secretName: {{ include "agents-usage.orchestratorSecretName" $ }}
+            items:
+              - key: {{ include "agents-usage.orchestratorSecretKey" $ }}
+                path: token
+        {{- else }}
+        {{- if $.Values.serviceListener.enabled }}
+        - name: service-tokens
+          secret:
+            secretName: {{ include "agents-usage.serviceTokensSecret" $ }}
+            items:
+              - key: {{ $.Values.serviceListener.tokensSecret.key | default "tokens" }}
+                path: tokens
+        {{- end }}
+        {{- if $.Values.ingestListener.enabled }}
+        - name: ingest-tokens
+          secret:
+            secretName: {{ include "agents-usage.ingestTokensSecret" $ }}
+            items:
+              - key: {{ $.Values.ingestListener.tokensSecret.key | default "token" }}
+                path: tokens
+        {{- end }}
+        {{- end }}
+      {{- with $.Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
