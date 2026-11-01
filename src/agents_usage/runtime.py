@@ -15,7 +15,7 @@ from agents_common.service_gate import load_tokens
 from psycopg_pool import AsyncConnectionPool
 from starlette.types import ASGIApp
 
-from agents_usage import prober
+from agents_usage import prober, watcher
 from agents_usage.api.app import create_app, create_ingest_app, create_service_app
 from agents_usage.cli import EXIT_CONFIG
 from agents_usage.settings import Settings
@@ -24,6 +24,7 @@ log = logging.getLogger(__name__)
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
 PROBER_LOCK = "agents-usage-prober"
+WATCHER_LOCK = "agents-usage-sessions"
 
 SingletonBody = Callable[[Settings, AsyncConnectionPool, asyncio.Event], Awaitable[None]]
 
@@ -172,3 +173,20 @@ def prober_main(settings: Settings) -> int:
         print("USAGE_CLAUDE_TOKEN_FILE: required for the prober", file=sys.stderr)
         return EXIT_CONFIG
     return _run_singleton(settings, PROBER_LOCK, _prober_body)
+
+
+async def _watcher_body(settings: Settings, pool: AsyncConnectionPool, stop: asyncio.Event) -> None:
+    await watcher.run_watcher(pool, settings, stop)
+
+
+def watcher_main(settings: Settings) -> int:
+    """Run the session marks watcher while holding its lock; exit 78 without the orchestrator
+    url or token file."""
+    for value, var in (
+        (settings.orchestrator_url, "USAGE_ORCHESTRATOR_URL"),
+        (settings.orchestrator_token_file, "USAGE_ORCHESTRATOR_TOKEN_FILE"),
+    ):
+        if not value:
+            print(f"{var}: required for the watcher", file=sys.stderr)
+            return EXIT_CONFIG
+    return _run_singleton(settings, WATCHER_LOCK, _watcher_body)

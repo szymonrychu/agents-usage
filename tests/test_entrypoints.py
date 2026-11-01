@@ -10,9 +10,11 @@ import socket
 import stat
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from collections.abc import Callable, Iterator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import httpx
@@ -150,13 +152,13 @@ def lock_holders(url: str) -> int:
 def test_help_lists_commands():
     result = usage("--help", env=env_for(None))
     assert result.returncode == 0
-    for command in ("migrate", "api", "prober"):
+    for command in ("migrate", "api", "prober", "watcher"):
         assert command in result.stdout
 
 
 def test_bad_config_exits_78():
     env = env_for(None, USAGE_STALE_SECONDS="1")
-    for command in ("migrate", "api", "prober"):
+    for command in ("migrate", "api", "prober", "watcher"):
         result = usage(command, env=env)
         assert result.returncode == 78, (command, result.stderr)
         assert "USAGE_DATABASE_URL" in result.stderr
@@ -167,6 +169,17 @@ def test_prober_without_token_file_exits_78():
     result = usage("prober", env=env_for("postgresql://u:p@db.invalid/usage"))
     assert result.returncode == 78
     assert "USAGE_CLAUDE_TOKEN_FILE: required for the prober" in result.stderr
+
+
+def test_watcher_without_orchestrator_settings_exits_78(tmp_path):
+    env = env_for("postgresql://u:p@db.invalid/usage")
+    result = usage("watcher", env=env)
+    assert result.returncode == 78
+    assert "USAGE_ORCHESTRATOR_URL: required for the watcher" in result.stderr
+    env["USAGE_ORCHESTRATOR_URL"] = "http://orch.invalid:8002"
+    result = usage("watcher", env=env)
+    assert result.returncode == 78
+    assert "USAGE_ORCHESTRATOR_TOKEN_FILE: required for the watcher" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -320,4 +333,66 @@ def test_prober_probes_only_when_notified(
     home = tmp_path / "claude-home"
     assert stat.S_IMODE(home.stat().st_mode) == 0o700
     assert "fake-oauth-token" not in worker.text()
+    assert worker.stop() == 0
+
+
+@pytest.fixture
+def orchestrator_stream() -> Iterator[tuple[str, list[tuple[str, str | None]], threading.Event]]:
+    """A local server answering GET /api/v1/stream with the fixture stream and then holding the
+    connection open; yields its url, the (path, authorization) of each request and the release
+    event."""
+    body = (Path(__file__).parent / "fixtures" / "stream-snapshot.sse").read_bytes()
+    seen: list[tuple[str, str | None]] = []
+    release = threading.Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            seen.append((self.path, self.headers.get("Authorization")))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            self.wfile.write(body)
+            self.wfile.flush()
+            release.wait(60)
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{server.server_address[1]}", seen, release
+    release.set()
+    server.shutdown()
+    server.server_close()
+
+
+def test_watcher_records_marks_from_the_stream(
+    db_url: str, tmp_path: Path, orchestrator_stream, processes
+):
+    url, seen, _ = orchestrator_stream
+    token = tmp_path / "orch-token"
+    token.write_text("orch-service-token\n")
+    env = env_for(db_url, USAGE_ORCHESTRATOR_URL=url, USAGE_ORCHESTRATOR_TOKEN_FILE=str(token))
+    worker = processes("watcher", "watcher", env)
+    worker.wait_for(f"holds the lock {runtime.WATCHER_LOCK}")
+
+    def marks() -> list[tuple]:
+        with psycopg.connect(db_url, autocommit=True) as conn:
+            return conn.execute(
+                "SELECT slug, origin, preset_name, ended_at IS NOT NULL FROM session_marks"
+                " ORDER BY started_at"
+            ).fetchall()
+
+    # alpha was in the snapshot and removed later, bravo stays, charlie came as a status event
+    wait(lambda: len(marks()) == 3, what="three marks")
+    wait(lambda: marks()[0][3], what="alpha to be closed")
+    assert marks() == [
+        ("alpha-ui", "ui", None, True),
+        ("bravo-hook", "webhook", "pr-review", False),
+        ("charlie-sched", "schedule", "nightly", False),
+    ]
+    assert seen == [("/api/v1/stream", "Bearer orch-service-token")]
+    assert "orch-service-token" not in worker.text()
+    assert "FIXTURE-MESSAGE-BODY" not in worker.text()
     assert worker.stop() == 0

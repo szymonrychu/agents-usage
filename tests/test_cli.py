@@ -64,3 +64,18 @@ def test_prober_needs_token_file(monkeypatch, capsys):
     monkeypatch.setenv("USAGE_DATABASE_URL", "postgresql://u:p@db.invalid/usage")
     assert cli.main(["prober"]) == 78
     assert "USAGE_CLAUDE_TOKEN_FILE: required for the prober" in capsys.readouterr().err
+
+
+def test_watcher_registered():
+    parser = cli.build_parser()
+    sub = next(a for a in parser._actions if a.dest == "command")
+    assert "watcher" in sub.choices
+
+
+def test_watcher_needs_orchestrator_url_then_token_file(monkeypatch, capsys):
+    monkeypatch.setenv("USAGE_DATABASE_URL", "postgresql://u:p@db.invalid/usage")
+    assert cli.main(["watcher"]) == 78
+    assert "USAGE_ORCHESTRATOR_URL: required for the watcher" in capsys.readouterr().err
+    monkeypatch.setenv("USAGE_ORCHESTRATOR_URL", "http://orch.invalid:8002")
+    assert cli.main(["watcher"]) == 78
+    assert "USAGE_ORCHESTRATOR_TOKEN_FILE: required for the watcher" in capsys.readouterr().err

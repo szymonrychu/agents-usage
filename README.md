@@ -30,7 +30,7 @@ The `usage` entry point (`uv run usage <command>`):
 - `usage api` - serve the HTTP listeners: the UI port, the service port when `USAGE_SERVICE_TOKENS_FILE` is set and the ingest port when `USAGE_INGEST_TOKENS_FILE` is set. A token file that is empty or unreadable, or a token present in both files, makes the process exit 78.
 - `usage prober` - wait for probe requests and run the lazy claude probe when one is due (single instance through the advisory lock `agents-usage-prober`). Exits 78 when `USAGE_CLAUDE_TOKEN_FILE` is unset.
 
-The watcher command is added with its task.
+- `usage watcher` - read the orchestrator's session stream and record session start and end marks (single instance through the advisory lock `agents-usage-sessions`). Exits 78 when `USAGE_ORCHESTRATOR_URL` or `USAGE_ORCHESTRATOR_TOKEN_FILE` is unset.
 
 ## API
 
@@ -124,6 +124,20 @@ claude -p 'Reply with the single word ok.' --model haiku --output-format stream-
 - The child runs in its own process group, killed with SIGKILL after `USAGE_PROBE_TIMEOUT_SECONDS`; stdout is capped at 1 MiB and stderr at 64 KiB (the tails are kept).
 - Every attempt is stored in `probes` (windows in `probe_windows`; the prober is their only writer): `ok`, or an error `timeout`, `cli_error` (an error result line, or an empty or unreadable token file), `cli_exit` (a non-zero exit, or the child could not start) or `no_rate_limit_event`, with a redacted detail of at most 2000 characters. A rate limit event makes the probe ok whatever the exit code. Successful probes show up in the `readings` view with source `probe`.
 - Probes older than `USAGE_RETENTION_DAYS` are pruned when the prober starts and then once an hour, whether or not anyone asks or a probe runs (the timer only deletes rows; it never runs claude).
+
+## Watcher
+
+Records one `session_marks` row per orchestrator session, for the usage chart. It is its own process so the orchestrator token and the claude OAuth token never share a pod. It reads `GET $USAGE_ORCHESTRATOR_URL/api/v1/stream` (the orchestrator's service port, `Authorization: Bearer <token from USAGE_ORCHESTRATOR_TOKEN_FILE>`, read again on every connection) as server-sent events and uses three events only:
+
+- `snapshot` (first on every connection): the live sessions. A session never seen gets a mark (`started_at` is the session's `created_at`); an open mark whose session is no longer listed is closed with `ended_at` = now, which is approximate when a removal was missed while the watcher was away. The reconciliation is one transaction.
+- `session_status`: the session's mark is inserted when it has none.
+- `session_removed`: the session's open mark is closed with `ended_at` = now (never before its start). A malformed session id is skipped.
+
+Everything else (`agent_status`, `message_status`, `leader_changed`) is ignored, and of the three events only `id`, `slug`, `preset_id`, `preset_name`, `created_at`, `created_by_service` and `created_by_session` are read. The stream carries message text and prompts; they are dropped when parsed and are never stored or logged. Marks are insert-only: a known session is never inserted again and a closed mark is never reopened. The mark's `origin` comes from the provenance fields: no provenance is `ui`, `agents-webhook` is `webhook`, `agents-schedule` is `schedule`, `agents-matrix-connector` is `chat`, any other service is `other`, and a creating session (an agent) is `agent`.
+
+- A refused (401, 403, any non-2xx), failed, silent (no bytes for `USAGE_STREAM_READ_TIMEOUT_SECONDS`) or ended connection is retried after a jittered exponential backoff, 1 s doubling up to `USAGE_RECONNECT_MAX_SECONDS`; a snapshot resets the backoff. The log has one line per failure (`stream refused status=401`), never the token or a response body.
+- Closed marks older than `USAGE_RETENTION_DAYS` are purged when the watcher starts and then once an hour; open marks are never purged.
+- The orchestrator's release must list this service's token hash (`tokenHashes`) for the stream route to answer.
 
 ## Configuration
 

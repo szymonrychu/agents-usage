@@ -2,6 +2,17 @@
 
 Lessons that outlive a session. Newest first.
 
+## 2026-11-01 - session marks watcher (claude-usage-monitor A6)
+
+- The watcher is its own component (a third command, lock `agents-usage-sessions`) so the claude OAuth token (prober) and the orchestrator service token (watcher) never share a pod. It is also the only writer of `session_marks`.
+- Marks are insert-only (`ON CONFLICT DO NOTHING`): a known session is never inserted again, a closed mark is never reopened. `ended_at` is `now()` when the removal event arrives or when a snapshot lacks the session, so it is approximate after a missed removal; `close_mark` uses `greatest(now, started_at)` because the table CHECK forbids an end before the start and the orchestrator's `created_at` clock may be ahead of ours.
+- Only the start and end of sessions are marked (Q9): no pods, no scale events, no agent status.
+- Purge deletes closed marks only (`ended_at < now - USAGE_RETENTION_DAYS`), at start and hourly in its own loop and try/except; an open mark of any age stays.
+- The stream carries message text and prompts (`message_status`, the session `spec`). `mark_from_session` reads seven fields and builds a frozen `Mark`, so everything else is dropped at parse; `agent_status`, `message_status` and `leader_changed` are not even JSON-decoded. A test feeds a fixture with message bodies and asserts they are in no log line and no repository call.
+- A `snapshot` whose `sessions` is not a list is ignored, not read as empty (an empty list closes every open mark). A snapshot entry with a malformed id or time is skipped with a warning; its open mark, if any, would then be closed by that snapshot (accepted: the orchestrator always sends valid views, and the next `session_status` cannot reopen it).
+- Backoff is `min(max, 2**attempt) * (0.5 + jitter/2)`; every end of a connection (error, refusal, EOF) sleeps one step, and a snapshot resets the counter, so a healthy stream that drops reconnects after about a second and a 401 loop settles at `USAGE_RECONNECT_MAX_SECONDS`.
+- Tests inject a `MarksRepo` stand-in (reconcile/insert/close/purge), the clock, the sleep, the jitter and an httpx `MockTransport`; the pure parts (`sse.py`, `marks.py`) and `watcher.py` need no database. The SSE parser is a line-fed class (`SseParser`) because the watcher reads lines asynchronously; `parse_sse` wraps it. Unlike the SSE spec, the `id` does not persist to the next event (nothing here uses Last-Event-ID).
+
 ## 2026-11-01 - current and history API (claude-usage-monitor A4)
 
 - `current` = the highest reading of the newest window per metric: usage inside a window only grows, so an idle agent's older re-send never lowers it. Readings are grouped by `resets_at` truncated to the minute (resets jitter by seconds between senders); the group with the latest `resets_at` wins and its `observed_at`/`source` are those of its newest reading. A window with `resets_at <= now` is dropped (the orchestrator pins the same boundary).
