@@ -165,11 +165,13 @@ def test_bad_window_entries_skipped(bad):
 
 def test_bad_metric_names_skipped():
     good = {"utilization": 0.25, "resetsAt": 1794049200}
-    names = ["Bad-Key", "", "x" * 65, "a b", "UPPER"]
+    names = ["Bad-Key", "", "x" * 65, "a b", "UPPER", "seven_day\n"]
     w = windows_from_event(unified(**{n: good for n in names}, ok_1=good, **{"y" * 64: good}))
     assert set(w) == {"ok_1", "y" * 64}
     top = {"rateLimitType": "Bad-Key", "utilization": 0.5, "resetsAt": 1794049200}
     assert windows_from_event(top) == {}
+    status = {"seven_day\n": {"used_percentage": 7, "resets_at": 1794049200}}
+    assert windows_from_statusline(status) == {}
 
 
 def test_windows_from_event_not_a_dict():

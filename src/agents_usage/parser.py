@@ -45,7 +45,7 @@ def _finite(value: object) -> float | None:
 
 def _window(metric: object, percent: object, resets_at: object, scale: float) -> Window | None:
     """One validated window, or None when any part is unusable."""
-    if not isinstance(metric, str) or not _METRIC.match(metric):
+    if not isinstance(metric, str) or not _METRIC.fullmatch(metric):
         return None
     raw_percent = _finite(percent)
     raw_reset = _finite(resets_at)
