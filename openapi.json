@@ -159,6 +159,75 @@
         "title": "LastSampleView",
         "type": "object"
       },
+      "MarkView": {
+        "description": "One session: `ended_at` is null while it is open (clients run it to now).",
+        "properties": {
+          "ended_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "origin": {
+            "title": "Origin",
+            "type": "string"
+          },
+          "preset_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preset Id"
+          },
+          "preset_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preset Name"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "slug",
+          "preset_id",
+          "preset_name",
+          "origin",
+          "started_at",
+          "ended_at"
+        ],
+        "title": "MarkView",
+        "type": "object"
+      },
       "PointView": {
         "properties": {
           "metric": {
@@ -238,6 +307,39 @@
           "rate_limits"
         ],
         "title": "SampleIn",
+        "type": "object"
+      },
+      "SessionsView": {
+        "properties": {
+          "from": {
+            "format": "date-time",
+            "title": "From",
+            "type": "string"
+          },
+          "marks": {
+            "items": {
+              "$ref": "#/components/schemas/MarkView"
+            },
+            "title": "Marks",
+            "type": "array"
+          },
+          "to": {
+            "format": "date-time",
+            "title": "To",
+            "type": "string"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "truncated",
+          "marks"
+        ],
+        "title": "SessionsView",
         "type": "object"
       },
       "WindowView": {
@@ -543,6 +645,108 @@
           }
         },
         "summary": "Post Sample"
+      }
+    },
+    "/usage/v1/sessions": {
+      "get": {
+        "operationId": "sessions_usage_v1_sessions_get",
+        "parameters": [
+          {
+            "description": "Start of the range (default: to minus 7 days)",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Start of the range (default: to minus 7 days)",
+              "title": "From"
+            }
+          },
+          {
+            "description": "End of the range (default: now)",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "End of the range (default: now)",
+              "title": "To"
+            }
+          },
+          {
+            "description": "Marks at most",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 1000,
+              "description": "Marks at most",
+              "maximum": 2000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionsView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "no or an unknown bearer token on the service or ingest listener (unauthorized)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "source address is not allowed on the UI listener (forbidden)"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "invalid request (invalid_request, no_windows)"
+          }
+        },
+        "summary": "Sessions"
       }
     }
   }

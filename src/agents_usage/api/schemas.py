@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
@@ -67,3 +68,24 @@ class HistoryView(BaseModel):
     to: UtcDatetime
     bucket_seconds: int
     points: list[PointView]
+
+
+class MarkView(BaseModel):
+    """One session: `ended_at` is null while it is open (clients run it to now)."""
+
+    session_id: uuid.UUID
+    slug: str
+    preset_id: uuid.UUID | None
+    preset_name: str | None
+    origin: str
+    started_at: UtcDatetime
+    ended_at: UtcDatetime | None
+
+
+class SessionsView(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    from_: UtcDatetime = Field(alias="from")
+    to: UtcDatetime
+    truncated: bool
+    marks: list[MarkView]

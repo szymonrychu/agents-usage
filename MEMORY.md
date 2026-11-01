@@ -64,3 +64,11 @@ Lessons that outlive a session. Newest first.
 - `session_marks` lives in migration 0001 because nothing was released yet.
 - `runtime._run_singleton(settings, lock_name, body)` is the one copy of the advisory-lock worker boilerplate (agents-schedule's `_work`/`_hold_and_run`), reused by the prober and the watcher; `body(settings, pool, stop)` runs while the lock is held.
 - Database tests need Docker (testcontainers) and run in CI only; this repo's local runs skip nothing, they error without Docker.
+
+## 2026-11-01 - sessions API (claude-usage-monitor A7)
+
+- Overlap predicate: a mark belongs to `[from, to)` when `started_at < to AND (ended_at IS NULL OR ended_at > from)`. A mark that ended exactly at `from` is out, one that started exactly at `to` is out (half-open, as history).
+- Open marks are served with `ended_at: null` (never filled with now): the server cannot know the session still runs after the mark was read, and the UI runs an open mark to the right edge of its chart. The key is always present (the web client types it as `string | null`).
+- Order is `started_at, session_id` (the second key only makes ties stable); `limit` (1..2000, default 1000) keeps the oldest marks and `truncated` says more existed: the query fetches `limit + 1` rows and the route trims, so there is no second count query.
+- The statement uses `session_marks_started_at_idx` and the partial open/ended indexes; no EXPLAIN test (the table is small: one row per session, 90 days of retention).
+- The route is mounted on the UI and the service listeners like `current` and `history`; it does not wake the prober.

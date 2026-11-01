@@ -90,6 +90,31 @@ GET /usage/v1/history?from=2026-10-31T00:00:00Z&to=2026-11-07T00:00:00Z&metric=s
 - Query: `from` and `to` (ISO 8601; a time without a zone is UTC; the range is `from` inclusive to `to` exclusive), default `to` = now and `from` = `to` minus 7 days; `metric` (optional, `^[a-z0-9_]{1,64}$`, default every metric); `max_points` (10..1000, default 500). `from` must be before `to` and the range at most 100 days, else `422 invalid_request`.
 - Downsampling: `bucket_seconds = max(1, ceil((to - from) / max_points))`. Per metric and bucket only the peak reading (highest `percent`, ties to the latest) is returned, as the real stored reading, so a range holds at most `max_points` points per metric and a short range comes back unchanged. The server answers with one indexed query over the `readings` view.
 
+### `GET /usage/v1/sessions`
+
+The session start and end marks that overlap a range, for the timeline under the chart:
+
+```
+GET /usage/v1/sessions?from=2026-10-31T00:00:00Z&to=2026-11-07T00:00:00Z&limit=1000
+```
+
+```json
+{
+  "from": "2026-10-31T00:00:00Z",
+  "to": "2026-11-07T00:00:00Z",
+  "truncated": false,
+  "marks": [
+    {"session_id": "5f0c1c36-8c0e-4a54-9a43-1f3a3b6f2d10", "slug": "fix-flaky-test", "preset_id": "0b6d6d52-1d0e-4a30-8f7e-6a1b0d3c9e11", "preset_name": "reviewer", "origin": "webhook", "started_at": "2026-10-30T22:15:00Z", "ended_at": "2026-11-01T09:40:12Z"},
+    {"session_id": "c1a7a9a4-2c35-4c2f-b0a1-5d1f6a8f7b22", "slug": "weekly-report", "preset_id": null, "preset_name": null, "origin": "ui", "started_at": "2026-11-06T23:50:00Z", "ended_at": null}
+  ]
+}
+```
+
+- Query: `from` and `to` as for history (default `to` = now and `from` = `to` minus 7 days; a time without a zone is UTC; `from` must be before `to`, the range at most 100 days, else `422 invalid_request`); `limit` (1..2000, default 1000, else `422 invalid_request`).
+- A mark is returned when it overlaps the range: it started before `to` and is still open or ended after `from`. Marks come oldest `started_at` first, so a `limit` cut keeps the oldest and sets `truncated` to true.
+- An open session has `ended_at: null`; clients draw it up to now. `origin` is one of `ui`, `webhook`, `schedule`, `chat`, `agent`, `other`; `preset_id` and `preset_name` are null when the session has no preset. A session that ended while the watcher was down has an approximate `ended_at` (the time the watcher noticed).
+- Marks come from the orchestrator's session stream (see Watcher); nothing is read from pods.
+
 ### `POST /usage/v1/samples`
 
 The agents push their statusLine `rate_limits` here (ingest listener only, behind the ingest bearer token). It is the one writer of `samples` and `sample_windows`. The agents' token can only add samples; the UI and service listeners refuse the route, and the ingest tokens must differ from the service tokens.

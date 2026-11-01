@@ -7,12 +7,34 @@ setting `ended_at` once. Only closed marks are ever purged.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 
 from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 
 from agents_usage.marks import Mark, SnapshotPlan, plan_snapshot
+
+
+@dataclass(frozen=True)
+class MarkRow:
+    """A stored mark; `ended_at` is None while the session is open."""
+
+    session_id: uuid.UUID
+    slug: str
+    preset_id: uuid.UUID | None
+    preset_name: str | None
+    origin: str
+    started_at: datetime
+    ended_at: datetime | None
+
+
+OVERLAPPING_SQL = (
+    "SELECT session_id, slug, preset_id, preset_name, origin, started_at, ended_at"
+    " FROM session_marks"
+    " WHERE started_at < %s AND (ended_at IS NULL OR ended_at > %s)"
+    " ORDER BY started_at, session_id LIMIT %s"
+)
 
 
 async def insert_mark(conn: AsyncConnection, mark: Mark) -> bool:
@@ -55,6 +77,15 @@ async def purge(conn: AsyncConnection, older_than: datetime) -> int:
     """Delete the marks closed before `older_than`; an open mark is never deleted."""
     cur = await conn.execute("DELETE FROM session_marks WHERE ended_at < %s", (older_than,))
     return cur.rowcount
+
+
+async def overlapping(
+    conn: AsyncConnection, frm: datetime, to: datetime, limit: int
+) -> list[MarkRow]:
+    """The marks that overlap `[frm, to)`, oldest start first: started before `to` and still open
+    or ended after `frm`. Fetches `limit + 1` rows so the caller can tell a cut-off list."""
+    cur = await conn.execute(OVERLAPPING_SQL, (to, frm, limit + 1))
+    return [MarkRow(*row) for row in await cur.fetchall()]
 
 
 async def open_and_known_ids(conn: AsyncConnection) -> tuple[set[uuid.UUID], set[uuid.UUID]]:

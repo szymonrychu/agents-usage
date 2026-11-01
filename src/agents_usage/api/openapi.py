@@ -1,10 +1,10 @@
 """Deterministic OpenAPI export: `python -m agents_usage.api.openapi > openapi.json`.
 
-The document covers every route of the service: the read routes (served on the UI and the
-service listeners) and the ingest route (served on the ingest listener). FastAPI documents a
-validation error as its own `HTTPValidationError`; this service answers every error with
-`{"error": {"code", "message"}}` (see `errors.py`), so the export replaces the generated error
-responses with that shape and the statuses each route really returns.
+The document covers every route of the service: the read routes (current, history, sessions;
+served on the UI and the service listeners) and the ingest route (served on the ingest
+listener). FastAPI documents a validation error as its own `HTTPValidationError`; this service
+answers every error with `{"error": {"code", "message"}}` (see `errors.py`), so the export
+replaces the generated error responses with that shape and the statuses each route really returns.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from agents_usage.api import ingest, usage
+from agents_usage.api import ingest, sessions, usage
 from agents_usage.api.app import PREFIX, _build_app
 from agents_usage.api.schemas import SampleIn
 from agents_usage.settings import Settings
@@ -47,6 +47,7 @@ ERRORS = {
 ROUTE_ERRORS: dict[tuple[str, str], tuple[int, ...]] = {
     ("get", "/current"): (401, 403),
     ("get", "/history"): (401, 403, 422),
+    ("get", "/sessions"): (401, 403, 422),
     ("post", "/samples"): (401, 413, 422),
 }
 
@@ -55,6 +56,7 @@ def _document() -> dict[str, Any]:
     settings = Settings(database_url="postgresql://openapi/export")
     app = _build_app(settings, pool=None)  # type: ignore[arg-type]
     app.include_router(usage.router, prefix=PREFIX)
+    app.include_router(sessions.router, prefix=PREFIX)
     app.include_router(ingest.router, prefix=PREFIX)
     doc = app.openapi()
     for path, methods in doc["paths"].items():

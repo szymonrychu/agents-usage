@@ -14,7 +14,7 @@ from psycopg_pool import AsyncConnectionPool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from agents_usage.api import ingest, usage
+from agents_usage.api import ingest, sessions, usage
 from agents_usage.api.errors import ApiError, error_response
 from agents_usage.settings import Settings
 
@@ -112,6 +112,7 @@ def create_app(settings: Settings, pool: AsyncConnectionPool) -> FastAPI:
     """The ui app: every route behind the source allowlist."""
     app = _build_app(settings, pool)
     app.include_router(usage.router, prefix=PREFIX)
+    app.include_router(sessions.router, prefix=PREFIX)
     app.add_middleware(SourceAllowlist, networks=settings.api_networks())
     return app
 
@@ -123,6 +124,7 @@ def create_service_app(settings: Settings, pool: AsyncConnectionPool, tokens: li
         settings, pool, probe_trigger=usage.ProbeTrigger(pool, settings.probe_after_seconds)
     )
     app.include_router(usage.router, prefix=PREFIX)
+    app.include_router(sessions.router, prefix=PREFIX)
     app.add_middleware(ServiceTokenGate, tokens=tokens)
     return app
 

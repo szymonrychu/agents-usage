@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 README = (ROOT / "README.md").read_text(encoding="utf-8")
 SETTINGS = Settings(database_url="postgresql://unused/db")
 
-READ_ROUTES = {"GET /usage/v1/current", "GET /usage/v1/history"}
+READ_ROUTES = {"GET /usage/v1/current", "GET /usage/v1/history", "GET /usage/v1/sessions"}
 INGEST_ROUTES = {"POST /usage/v1/samples"}
 
 
@@ -100,5 +100,10 @@ def test_readme_documents_the_read_contract() -> None:
         "invalid_request",
         "too_large",
         "no_windows",
+        "truncated",
+        "ended_at",
+        "session_id",
+        "origin",
+        "limit",
     ):
         assert needle in api, needle
