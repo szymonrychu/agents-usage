@@ -27,9 +27,24 @@ Run from this directory with mise:
 The `usage` entry point (`uv run usage <command>`):
 
 - `usage migrate` - apply the schema migrations to the service's own database and exit.
-- `usage api` - serve the HTTP listeners (UI port, and the service port when `USAGE_SERVICE_TOKENS_FILE` is set).
+- `usage api` - serve the HTTP listeners: the UI port, the service port when `USAGE_SERVICE_TOKENS_FILE` is set and the ingest port when `USAGE_INGEST_TOKENS_FILE` is set. A token file that is empty or unreadable, or a token present in both files, makes the process exit 78.
 
 The prober and the watcher commands are added with their tasks.
+
+## Ingest
+
+The ingest listener (port `USAGE_INGEST_PORT`, only when `USAGE_INGEST_TOKENS_FILE` is set) serves `POST /usage/v1/samples`, `/healthz` and `/readyz` and nothing else, behind the ingest bearer token. It is the one writer of `samples` and `sample_windows`. The agents' token can only add samples; the UI and service listeners refuse the route, and the ingest tokens must differ from the service tokens.
+
+Body (at most 8192 bytes, checked while streaming; unknown keys are refused):
+
+```json
+{"agent": "agent-x-0", "cli_version": "2.1.304", "rate_limits": {"five_hour": {"used_percentage": 23.5, "resets_at": 1794020400}}}
+```
+
+- `agent`: optional, `^[A-Za-z0-9._-]{1,128}$`; `cli_version`: optional, at most 64 characters; `rate_limits`: the statusLine object as received.
+- `202 {"windows": n}`: n windows were stored. `413 too_large`: the body exceeds the cap. `422 no_windows`: no window in `rate_limits` was usable. `422 invalid_request`: any other bad body. `401`: no or a wrong ingest token.
+- The sample time is the server's receive time, never a client clock. `rate_limits` is kept verbatim as `raw`.
+- Bodies and tokens are never logged. Samples older than `USAGE_RETENTION_DAYS` are pruned after an insert, at most once an hour.
 
 ## Configuration
 

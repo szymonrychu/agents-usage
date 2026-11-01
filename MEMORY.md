@@ -2,6 +2,14 @@
 
 Lessons that outlive a session. Newest first.
 
+## 2026-11-01 - samples ingest (claude-usage-monitor A8)
+
+- Ingest runs on its own listener and token so the agents' token can only add samples and the read tokens (UI allowlist, service tokens) cannot post; `api_main` loads both token files before opening anything and exits 78 when a token is in both, when a file is empty or unreadable.
+- `observed_at` is the server receive time, not a client clock (pod clocks and a replayed body must not move the series); `raw` keeps the posted `rate_limits` verbatim, only `windows_from_statusline` decides what becomes a window.
+- Body and bearer are never logged (the token gate logs method and path only); the 8192-byte cap is enforced while streaming, so a chunked body without Content-Length is refused too.
+- Prune is piggybacked on ingest (at most hourly, its own try/except, never fails the request): there is no timer in the service. The prune mark is per process, so a restart prunes on the next insert.
+- `rate_limits` with NaN/Infinity is refused 422 (jsonb cannot store it) and a `DataError` from the insert (for example a NUL character in a string) maps to 422 instead of a 500.
+
 ## 2026-11-01 - usage window parsers (claude-usage-monitor A2)
 
 - Percent is 0-100 everywhere: `windows_from_event` multiplies the probe's 0-1 `utilization` by 100 once; `windows_from_statusline` takes `used_percentage` as is (documented 0-100, a 0.22 stays 0.22: no guessing).

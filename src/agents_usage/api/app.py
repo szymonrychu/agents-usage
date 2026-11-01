@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+from datetime import timedelta
 
 from agents_common.service_gate import ServiceTokenGate
 from fastapi import FastAPI, Request
@@ -13,6 +14,7 @@ from psycopg_pool import AsyncConnectionPool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from agents_usage.api import ingest
 from agents_usage.api.errors import ApiError, error_response
 from agents_usage.settings import Settings
 
@@ -113,5 +115,17 @@ def create_service_app(settings: Settings, pool: AsyncConnectionPool, tokens: li
     """The service app (the orchestrator's usage gate): bearer service tokens instead of the
     allowlist, and reading `current` here is what wakes the prober."""
     app = _build_app(settings, pool, probe_trigger=True)
+    app.add_middleware(ServiceTokenGate, tokens=tokens)
+    return app
+
+
+def create_ingest_app(settings: Settings, pool: AsyncConnectionPool, tokens: list[str]) -> FastAPI:
+    """The ingest app (the agents' statusLine samples): the ingest router only, behind the
+    ingest bearer tokens, so the agents' token can add samples and nothing else."""
+    app = _build_app(settings, pool)
+    app.state.ingest = ingest.IngestState(
+        ingest.PoolSampleStore(pool), timedelta(days=settings.retention_days)
+    )
+    app.include_router(ingest.router, prefix=PREFIX)
     app.add_middleware(ServiceTokenGate, tokens=tokens)
     return app
