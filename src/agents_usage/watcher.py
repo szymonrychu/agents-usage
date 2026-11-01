@@ -14,6 +14,7 @@ import contextlib
 import json
 import logging
 import random
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
@@ -34,17 +35,22 @@ log = logging.getLogger(__name__)
 STREAM_PATH = "/api/v1/stream"
 PURGE_EVERY_SECONDS = 3600.0
 CONNECT_TIMEOUT_SECONDS = 10.0
+STABLE_AFTER_SECONDS = 30.0
+MAX_BACKOFF_EXPONENT = 30
 TOKEN_UNREADABLE = "orchestrator token file unreadable or empty"
 
 
 class Repo(Protocol):
-    async def reconcile(self, snapshot: list[Mark], now: datetime) -> None: ...
+    async def reconcile(
+        self, snapshot: list[Mark], live: set[uuid.UUID], now: datetime
+    ) -> None: ...
     async def insert(self, mark: Mark) -> bool: ...
     async def close(self, session_id: uuid.UUID, now: datetime) -> bool: ...
     async def purge(self, older_than: datetime) -> int: ...
 
 
 Clock = Callable[[], datetime]
+Monotonic = Callable[[], float]
 
 
 class StreamRefused(Exception):
@@ -61,8 +67,9 @@ def _utcnow() -> datetime:
 
 def next_delay(attempt: int, max_seconds: float, jitter: float) -> float:
     """Seconds to wait before reconnect number `attempt` (from 0): 1 s doubling up to
-    `max_seconds`, scaled by 0.5..1 with `jitter` in [0, 1)."""
-    return min(max_seconds, 2.0**attempt) * (0.5 + jitter / 2)
+    `max_seconds`, scaled by 0.5..1 with `jitter` in [0, 1). The exponent is capped so a long
+    outage cannot overflow the float."""
+    return min(max_seconds, 2.0 ** min(attempt, MAX_BACKOFF_EXPONENT)) * (0.5 + jitter / 2)
 
 
 def _json(event: SseEvent) -> dict[str, Any] | None:
@@ -74,9 +81,7 @@ def _json(event: SseEvent) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-async def _handle(
-    event: SseEvent, repo: Repo, now: Clock, on_snapshot: Callable[[], None] | None
-) -> None:
+async def _handle(event: SseEvent, repo: Repo, now: Clock) -> None:
     """Apply one stream event; only snapshot, session_status and session_removed matter."""
     if event.event not in ("snapshot", "session_status", "session_removed"):
         return
@@ -93,10 +98,9 @@ async def _handle(
         snapshot = [m for m in found if m is not None]
         if len(snapshot) != len(found):
             log.warning("snapshot: skipped %d malformed sessions", len(found) - len(snapshot))
-        await repo.reconcile(snapshot, now())
-        log.info("snapshot: %d sessions", len(snapshot))
-        if on_snapshot is not None:
-            on_snapshot()
+        # an unparsable entry is still live: only the sessions absent from the list are closed
+        await repo.reconcile(snapshot, marks.live_ids(entries), now())
+        log.info("snapshot: %d sessions", len(entries))
     elif event.event == "session_status":
         mark = marks.mark_from_session(data.get("session"))
         if mark is not None:
@@ -120,10 +124,10 @@ async def consume(
     token: str,
     now: Clock,
     *,
-    on_snapshot: Callable[[], None] | None = None,
+    on_connected: Callable[[], None] | None = None,
 ) -> None:
     """Read one connection of the stream until it ends (returns) or fails (raises).
-    `on_snapshot` is called after each snapshot has been reconciled."""
+    `on_connected` is called once the orchestrator has accepted the request."""
     url = f"{(settings.orchestrator_url or '').rstrip('/')}{STREAM_PATH}"
     timeout = httpx.Timeout(CONNECT_TIMEOUT_SECONDS, read=settings.stream_read_timeout_seconds)
     headers = {"Authorization": f"Bearer {token}", "Accept": "text/event-stream"}
@@ -131,11 +135,13 @@ async def consume(
         if not 200 <= response.status_code < 300:
             raise StreamRefused(response.status_code)  # the body is never read
         log.info("stream connected")
+        if on_connected is not None:
+            on_connected()
         parser = SseParser()
         async for line in response.aiter_lines():
             event = parser.feed(line)
             if event is not None:
-                await _handle(event, repo, now, on_snapshot)
+                await _handle(event, repo, now)
 
 
 def _read_token(path: str | None) -> str:
@@ -154,6 +160,11 @@ def _describe(exc: BaseException) -> str:
     return f"stream failed: {type(exc).__name__}: {exc}"
 
 
+async def _sleep_or_stop(stop: asyncio.Event, seconds: float) -> None:
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(stop.wait(), seconds)
+
+
 async def purge_loop(
     repo: Repo,
     settings: Settings,
@@ -161,9 +172,11 @@ async def purge_loop(
     now: Clock = _utcnow,
     *,
     every: float = PURGE_EVERY_SECONDS,
+    sleep: Callable[[float], Awaitable[None]] | None = None,
 ) -> None:
     """Delete the marks closed longer ago than the retention, now and then every `every`
     seconds, until `stop`. A failure is logged and never ends the loop."""
+    wait = sleep or (lambda seconds: _sleep_or_stop(stop, seconds))
     while not stop.is_set():
         try:
             removed = await repo.purge(now() - timedelta(days=settings.retention_days))
@@ -172,13 +185,7 @@ async def purge_loop(
         else:
             if removed:
                 log.info("purged %d old session marks", removed)
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(stop.wait(), every)
-
-
-async def _sleep_or_stop(stop: asyncio.Event, seconds: float) -> None:
-    with contextlib.suppress(TimeoutError):
-        await asyncio.wait_for(stop.wait(), seconds)
+        await wait(every)
 
 
 async def _until_stop(work: Awaitable[None], stop: asyncio.Event) -> None:
@@ -208,30 +215,36 @@ async def run_watcher(
     jitter: Callable[[], float] = random.random,
     repo: Repo | None = None,
     purge_every: float = PURGE_EVERY_SECONDS,
+    monotonic: Monotonic = time.monotonic,
+    stable_after: float = STABLE_AFTER_SECONDS,
 ) -> None:
     """Keep one connection to the stream until `stop`: reconnect with a jittered exponential
-    backoff after any end or failure, the counter back to 0 after each snapshot."""
+    backoff after any end or failure. The counter goes back to 0 only when the connection
+    stayed up for `stable_after` seconds, so a flapping orchestrator is not hammered."""
     if repo is None:
-        assert pool is not None
+        if pool is None:
+            raise ValueError("run_watcher needs a pool or a repo")
         repo = MarksRepo(pool)
     wait = sleep or (lambda seconds: _sleep_or_stop(stop, seconds))
     attempt = 0
+    connected_at: float | None = None
 
-    def snapshot_done() -> None:
-        nonlocal attempt
-        attempt = 0
+    def connected() -> None:
+        nonlocal connected_at
+        connected_at = monotonic()
 
     purging = asyncio.create_task(purge_loop(repo, settings, stop, now, every=purge_every))
     try:
         async with httpx.AsyncClient(transport=transport, trust_env=False) as client:
             while not stop.is_set():
+                connected_at = None
                 token = _read_token(settings.orchestrator_token_file)
                 try:
                     if not token:
                         log.warning(TOKEN_UNREADABLE)
                     else:
                         await _until_stop(
-                            consume(client, repo, settings, token, now, on_snapshot=snapshot_done),
+                            consume(client, repo, settings, token, now, on_connected=connected),
                             stop,
                         )
                         if not stop.is_set():
@@ -240,6 +253,8 @@ async def run_watcher(
                     log.warning("%s", _describe(exc))
                 if stop.is_set():
                     break
+                if connected_at is not None and monotonic() - connected_at >= stable_after:
+                    attempt = 0
                 await wait(next_delay(attempt, settings.reconnect_max_seconds, jitter()))
                 attempt += 1
     finally:

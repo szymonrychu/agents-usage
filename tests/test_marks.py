@@ -93,23 +93,40 @@ def test_mark_from_session_bad_optional_fields_are_dropped():
 
 
 def test_plan_snapshot_inserts_unknown_and_closes_missing():
-    plan = marks.plan_snapshot({A, B}, {A, B, C}, [mark(A), mark(D)])
+    plan = marks.plan_snapshot({A, B}, {A, B, C}, [mark(A), mark(D)], {A, D})
     assert plan.to_insert == [mark(D)]
     assert plan.to_close == [B]
 
 
 def test_plan_snapshot_never_reopens():
-    plan = marks.plan_snapshot(set(), {C}, [mark(C)])
+    plan = marks.plan_snapshot(set(), {C}, [mark(C)], {C})
     assert plan.to_insert == []
     assert plan.to_close == []
 
 
 def test_plan_snapshot_empty_snapshot_closes_all_open():
-    plan = marks.plan_snapshot({B, A}, {A, B, C}, [])
+    plan = marks.plan_snapshot({B, A}, {A, B, C}, [], set())
     assert plan.to_insert == []
     assert plan.to_close == [A, B]
 
 
 def test_plan_snapshot_duplicate_session_inserted_once():
-    plan = marks.plan_snapshot(set(), set(), [mark(A), mark(A)])
+    plan = marks.plan_snapshot(set(), set(), [mark(A), mark(A)], {A})
     assert plan.to_insert == [mark(A)]
+
+
+def test_plan_snapshot_live_but_unparsed_session_stays_open():
+    plan = marks.plan_snapshot({A, B}, {A, B}, [mark(A)], {A, B})
+    assert plan.to_close == []
+
+
+def test_live_ids_counts_every_entry_with_a_valid_id():
+    views = [
+        {"id": str(A), "created_at": "garbage"},
+        {"id": "nope"},
+        {"slug": "no id"},
+        None,
+        "x",
+        {"id": str(B)},
+    ]
+    assert marks.live_ids(views) == {A, B}

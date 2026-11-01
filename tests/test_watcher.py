@@ -1,6 +1,7 @@
 """The session marks watcher against a mocked orchestrator stream (no database)."""
 
 import asyncio
+import json
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -41,9 +42,9 @@ class FakeRepo:
         self.purges: list[datetime] = []
         self.purge_errors = 0
 
-    async def reconcile(self, snapshot, at):
-        self.calls.append(("reconcile", snapshot, at))
-        plan = marks.plan_snapshot(self.open, self.known, snapshot)
+    async def reconcile(self, snapshot, live, at):
+        self.calls.append(("reconcile", snapshot, at, live))
+        plan = marks.plan_snapshot(self.open, self.known, snapshot, live)
         for item in plan.to_insert:
             self.known.add(item.session_id)
             self.open.add(item.session_id)
@@ -150,6 +151,10 @@ def test_next_delay_grows_and_caps():
     assert watcher.next_delay(2, 60, 1.0) == 4.0
 
 
+def test_next_delay_survives_a_huge_attempt_counter():
+    assert watcher.next_delay(2000, 60, 0.5) == 60 * 0.75
+
+
 async def test_consume_snapshot_then_events(fake_repo, wsettings):
     seen = []
 
@@ -157,17 +162,18 @@ async def test_consume_snapshot_then_events(fake_repo, wsettings):
         seen.append(request)
         return streaming(STREAM)
 
-    snapshots = []
+    connected = []
     async with client_for(handler) as client:
         await watcher.consume(
-            client, fake_repo, wsettings, "t", now, on_snapshot=lambda: snapshots.append(1)
+            client, fake_repo, wsettings, "t", now, on_connected=lambda: connected.append(1)
         )
     assert [str(r.url) for r in seen] == ["http://orch.test:8002/api/v1/stream"]
     assert seen[0].headers["authorization"] == "Bearer t"
     assert seen[0].headers["accept"] == "text/event-stream"
     kinds = [call[0] for call in fake_repo.calls]
     assert kinds == ["reconcile", "insert", "close"]
-    _, snapshot, at = fake_repo.calls[0]
+    _, snapshot, at, live = fake_repo.calls[0]
+    assert live == {A, B}
     assert [m.session_id for m in snapshot] == [A, B]
     assert [m.origin for m in snapshot] == ["ui", "webhook"]
     assert at == NOW
@@ -179,7 +185,7 @@ async def test_consume_snapshot_then_events(fake_repo, wsettings):
     )
     assert inserted.started_at == datetime(2026, 11, 1, 10, 15, tzinfo=UTC)
     assert fake_repo.calls[2] == ("close", A, NOW)
-    assert snapshots == [1]
+    assert connected == [1]
     assert fake_repo.open == {B, C}
 
 
@@ -240,9 +246,9 @@ async def test_unauthorized_backs_off_and_retries(fake_repo, wsettings):
 
     run = Run(stop_after=3)
     await run.go(fake_repo, wsettings, handler)
-    # two refusals back off 0.5-1 s then 1-2 s; the snapshot resets the counter, so the sleep
-    # after the stream ends starts again from the first step
-    assert run.sleeps == [delay(0), delay(1), delay(0)]
+    # two refusals back off 0.5-1 s then 1-2 s; the third stream ends at once, so it is not
+    # stable and the backoff goes on growing
+    assert run.sleeps == [delay(0), delay(1), delay(2)]
     assert len(attempts) == 3
     assert fake_repo.open == {B, C}
 
@@ -278,7 +284,7 @@ async def test_read_timeout_reconnects(fake_repo, wsettings):
     run = Run(stop_after=2)
     await run.go(fake_repo, wsettings, handler)
     assert len(calls) == 2
-    assert run.sleeps == [delay(0), delay(0)]
+    assert run.sleeps == [delay(0), delay(1)]  # the second stream ended at once: not stable
     assert fake_repo.open == {B, C}
 
 
@@ -340,7 +346,7 @@ async def test_message_text_never_logged_or_stored(fake_repo, wsettings, caplog)
 
 
 async def test_unexpected_error_is_logged_and_retried(fake_repo, wsettings, caplog):
-    async def broken(snapshot, at):
+    async def broken(snapshot, live, at):
         raise RuntimeError("database is down")
 
     fake_repo.reconcile = broken
@@ -376,11 +382,16 @@ async def test_stop_ends_a_stream_that_never_ends(fake_repo, wsettings):
 async def test_purge_loop_hourly_in_its_own_try(fake_repo, wsettings):
     fake_repo.purge_errors = 1
     stop = asyncio.Event()
-    task = asyncio.create_task(watcher.purge_loop(fake_repo, wsettings, stop, now, every=0.01))
-    await asyncio.sleep(0.15)
-    stop.set()
-    await asyncio.wait_for(task, 1)
-    assert len(fake_repo.purges) >= 3  # the first failed, the loop went on
+    sleeps = []
+
+    async def sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) == 3:
+            stop.set()
+
+    await watcher.purge_loop(fake_repo, wsettings, stop, now, every=3600.0, sleep=sleep)
+    assert sleeps == [3600.0] * 3
+    assert len(fake_repo.purges) == 3  # the first failed, the loop went on
     assert set(fake_repo.purges) == {NOW - timedelta(days=wsettings.retention_days)}
 
 
@@ -388,3 +399,70 @@ async def test_run_watcher_purges_while_connected(fake_repo, wsettings):
     run = Run(stop_after=1)
     await run.go(fake_repo, wsettings, lambda r: streaming(b""))
     assert fake_repo.purges == [NOW - timedelta(days=90)]
+
+
+def snapshot_sse(*entries: dict) -> bytes:
+    return sse("snapshot", json.dumps({"sessions": [{"session": e} for e in entries]}))
+
+
+async def test_snapshot_entry_that_fails_to_parse_keeps_its_open_mark(fake_repo, wsettings):
+    fake_repo.known |= {A, B}
+    fake_repo.open |= {A, B}
+    good = {"id": str(A), "slug": "a", "created_at": "2026-11-01T10:00:00Z"}
+    bad_time = {"id": str(B), "slug": "b", "created_at": "not a time"}
+    body = snapshot_sse(good, bad_time)
+    async with client_for(lambda r: streaming(body)) as client:
+        await watcher.consume(client, fake_repo, wsettings, "t", now)
+    assert fake_repo.open == {A, B}  # B is still listed, only unparsable
+    _, snapshot, _, live = fake_repo.calls[0]
+    assert [m.session_id for m in snapshot] == [A]
+    assert live == {A, B}
+
+
+async def test_snapshot_entry_without_a_valid_id_does_not_keep_anything_open(fake_repo, wsettings):
+    fake_repo.known |= {A}
+    fake_repo.open |= {A}
+    body = snapshot_sse({"id": "nope", "slug": "x", "created_at": "2026-11-01T10:00:00Z"})
+    async with client_for(lambda r: streaming(body)) as client:
+        await watcher.consume(client, fake_repo, wsettings, "t", now)
+    assert fake_repo.open == set()
+    assert fake_repo.calls[0][3] == set()
+
+
+class Ticks:
+    """A monotonic clock that returns the given values in turn."""
+
+    def __init__(self, *values: float) -> None:
+        self.values = iter(values)
+
+    def __call__(self) -> float:
+        return next(self.values)
+
+
+async def test_backoff_resets_only_after_a_stable_connection(fake_repo, wsettings):
+    n = []
+
+    def handler(request):
+        n.append(1)
+        return httpx.Response(401) if len(n) <= 2 else streaming(STREAM)
+
+    run = Run(stop_after=4)
+    # third connection: up at 100, ended at 140 (stable for 30 s); fourth: refused? no, it
+    # streams again at 140 and ends at 141 (not stable)
+    ticks = Ticks(100.0, 140.0, 140.0, 141.0)
+    await run.go(fake_repo, wsettings, handler, monotonic=ticks, stable_after=30.0)
+    assert run.sleeps == [delay(0), delay(1), delay(0), delay(1)]
+
+
+async def test_a_flapping_stream_that_snapshots_keeps_backing_off(fake_repo, wsettings):
+    run = Run(stop_after=4)
+    ticks = Ticks(10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0)
+    await run.go(
+        fake_repo, wsettings, lambda r: streaming(STREAM), monotonic=ticks, stable_after=30.0
+    )
+    assert run.sleeps == [delay(0), delay(1), delay(2), delay(3)]
+
+
+async def test_run_watcher_needs_a_pool_or_a_repo(wsettings):
+    with pytest.raises(ValueError, match="pool or a repo"):
+        await watcher.run_watcher(None, wsettings, asyncio.Event())

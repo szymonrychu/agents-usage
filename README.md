@@ -135,7 +135,7 @@ Records one `session_marks` row per orchestrator session, for the usage chart. I
 
 Everything else (`agent_status`, `message_status`, `leader_changed`) is ignored, and of the three events only `id`, `slug`, `preset_id`, `preset_name`, `created_at`, `created_by_service` and `created_by_session` are read. The stream carries message text and prompts; they are dropped when parsed and are never stored or logged. Marks are insert-only: a known session is never inserted again and a closed mark is never reopened. The mark's `origin` comes from the provenance fields: no provenance is `ui`, `agents-webhook` is `webhook`, `agents-schedule` is `schedule`, `agents-matrix-connector` is `chat`, any other service is `other`, and a creating session (an agent) is `agent`.
 
-- A refused (401, 403, any non-2xx), failed, silent (no bytes for `USAGE_STREAM_READ_TIMEOUT_SECONDS`) or ended connection is retried after a jittered exponential backoff, 1 s doubling up to `USAGE_RECONNECT_MAX_SECONDS`; a snapshot resets the backoff. The log has one line per failure (`stream refused status=401`), never the token or a response body.
+- A refused (401, 403, any non-2xx), failed, silent (no bytes for `USAGE_STREAM_READ_TIMEOUT_SECONDS`) or ended connection is retried after a jittered exponential backoff, 1 s doubling up to `USAGE_RECONNECT_MAX_SECONDS`; the backoff resets only after a connection stayed up for 30 s. The log has one line per failure (`stream refused status=401`), never the token or a response body.
 - Closed marks older than `USAGE_RETENTION_DAYS` are purged when the watcher starts and then once an hour; open marks are never purged.
 - The orchestrator's release must list this service's token hash (`tokenHashes`) for the stream route to answer.
 

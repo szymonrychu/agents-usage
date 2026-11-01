@@ -70,11 +70,12 @@ class MarksRepo:
     def __init__(self, pool: AsyncConnectionPool) -> None:
         self.pool = pool
 
-    async def reconcile(self, snapshot: list[Mark], now: datetime) -> None:
-        """Bring the table in line with a full list of live sessions, in one transaction."""
+    async def reconcile(self, snapshot: list[Mark], live: set[uuid.UUID], now: datetime) -> None:
+        """Bring the table in line with a full list of live sessions (`snapshot` the parsed
+        marks, `live` every listed id), in one transaction."""
         async with self.pool.connection() as conn, conn.transaction():
             open_ids, known_ids = await open_and_known_ids(conn)
-            await apply_snapshot(conn, plan_snapshot(open_ids, known_ids, snapshot), now)
+            await apply_snapshot(conn, plan_snapshot(open_ids, known_ids, snapshot, live), now)
 
     async def insert(self, mark: Mark) -> bool:
         async with self.pool.connection() as conn:

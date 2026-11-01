@@ -103,11 +103,19 @@ async def test_purge_closed_only(pool):
 
 async def test_marks_repo_wraps_the_pool(pool):
     store = repo.MarksRepo(pool)
-    await store.reconcile([mark(A), mark(B)], NOW)
+    await store.reconcile([mark(A), mark(B)], {A, B}, NOW)
     assert await store.insert(mark(C)) is True
     assert await store.insert(mark(C)) is False
     assert await store.close(A, NOW) is True
-    await store.reconcile([mark(B), mark(D)], NOW + timedelta(minutes=1))
+    await store.reconcile([mark(B), mark(D)], {B, D}, NOW + timedelta(minutes=1))
     by_id = {r[0]: r[4] for r in await rows(pool)}
     assert by_id == {A: NOW, B: None, C: NOW + timedelta(minutes=1), D: None}
     assert await store.purge(NOW + timedelta(days=1)) == 2
+
+
+async def test_reconcile_keeps_the_open_mark_of_a_live_unparsed_session(pool):
+    store = repo.MarksRepo(pool)
+    await store.reconcile([mark(A), mark(B)], {A, B}, NOW)
+    await store.reconcile([mark(A)], {A, B}, NOW + timedelta(minutes=1))
+    by_id = {r[0]: r[4] for r in await rows(pool)}
+    assert by_id == {A: None, B: None}

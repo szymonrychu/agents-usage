@@ -90,13 +90,22 @@ def mark_from_session(view: Any) -> Mark | None:
     )
 
 
+def live_ids(views: list[Any]) -> set[uuid.UUID]:
+    """The ids of every listed session view that has a valid id, even when the rest of the
+    view is unparsable: such a session is still live and must keep its open mark."""
+    return {found for view in views if isinstance(view, dict) and (found := _uuid(view.get("id")))}
+
+
 def plan_snapshot(
-    open_ids: set[uuid.UUID], known_ids: set[uuid.UUID], snapshot: list[Mark]
+    open_ids: set[uuid.UUID],
+    known_ids: set[uuid.UUID],
+    snapshot: list[Mark],
+    live: set[uuid.UUID],
 ) -> SnapshotPlan:
-    """What a full list of live sessions changes: insert the sessions never seen, close the
-    open marks that are gone. A known (open or closed) session is never inserted again, so a
-    closed mark is never reopened."""
-    live = {mark.session_id for mark in snapshot}
+    """What a full list of live sessions changes: insert the parsed marks of sessions never
+    seen, close the open marks of sessions not in `live` (every listed id, parsed or not). A
+    known (open or closed) session is never inserted again, so a closed mark is never
+    reopened."""
     seen = set(known_ids)
     to_insert: list[Mark] = []
     for mark in snapshot:
