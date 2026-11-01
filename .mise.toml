@@ -22,4 +22,4 @@ run = "uv run pytest tests/test_chart.py tests/test_chart_ingress.py"
 
 [tasks."lint:chart"]
 description = "Lint the helm chart"
-run = "helm lint chart/agents-usage --set postgres.url=postgresql://x/y"
+run = "helm lint chart/agents-usage --set postgres.url=postgresql://x/y --set orchestrator.url=http://o --set orchestrator.token=t --set claude.existingSecret=c"

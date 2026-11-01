@@ -2,6 +2,16 @@
 
 Lessons that outlive a session. Newest first.
 
+## 2026-11-01 - helm chart (claude-usage-monitor A5)
+
+- Three Deployments (api, prober, watcher) from one image, so each token reaches exactly one pod type: the claude OAuth token only the prober, the orchestrator service token only the watcher, the service and ingest token files only the api. All are mounted as files (Secret key projected to `token`/`tokens`) and the settings carry only the file paths; the migrate init container mounts nothing but `/tmp`.
+- The prober and the watcher hold an advisory lock, so they are fixed at one replica with `Recreate` (a rolling update would start the new pod while the old one still holds the lock). Only the api has `replicas` and `podAnnotations` values.
+- The Service is named `<fullname>` (not `-api` as in agents-schedule): agents-helmfile and the orchestrator use `http://agents-usage:8001` and `:8002`. Ports are named `http`, `service`, `ingest`; the ingress backend is `http` only so the token listeners are never routed outside the cluster.
+- Component-only settings (listener ports and token paths, claude and orchestrator settings) are container env entries, not ConfigMap keys, because the ConfigMap is `envFrom` of every pod.
+- The ingest Secret is not rendered by the chart: agents-helmfile owns it (key `token`, no newline) and shares it with the agent pods as `CCW_USAGE_TOKEN`. Values were renamed from agents-schedule (`orchestrator.tokenSecret` -> `existingSecret`/`existingSecretKey`, `admin` -> `serviceListener`).
+- `.mise.toml` `lint:chart` passes `orchestrator.url`, `orchestrator.token` and `claude.existingSecret` because the render fails without them (preflight S04); the CI chart job runs the mise tasks, so it needed no edit.
+- The prober memory limit is 1Gi: claude is a node process that runs as a child.
+
 ## 2026-11-01 - session marks watcher (claude-usage-monitor A6)
 
 - The watcher is its own component (a third command, lock `agents-usage-sessions`) so the claude OAuth token (prober) and the orchestrator service token (watcher) never share a pod. It is also the only writer of `session_marks`.

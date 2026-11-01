@@ -164,6 +164,15 @@ Everything else (`agent_status`, `message_status`, `leader_changed`) is ignored,
 - Closed marks older than `USAGE_RETENTION_DAYS` are purged when the watcher starts and then once an hour; open marks are never purged.
 - The orchestrator's release must list this service's token hash (`tokenHashes`) for the stream route to answer.
 
+## Helm chart
+
+`chart/agents-usage` renders three Deployments from one image: `api` (the listeners), `prober` and `watcher`. The prober and the watcher are singletons (one replica, `Recreate`, no ports). Every pod runs a `migrate` init container, a read-only root filesystem and an `emptyDir` at `/tmp`.
+
+- The Service `<fullname>` has port `http` (80) and, when enabled, `service` (`serviceListener.servicePort`, 8001) and `ingest` (`ingestListener.servicePort`, 8002); the in-cluster URLs are `http://<fullname>:8001` and `http://<fullname>:8002`. The ingress routes the UI port only.
+- Each secret reaches one component: the database URL all three; the claude OAuth token (`claude.token` or `claude.existingSecret`, key `CLAUDE_CODE_OAUTH_TOKEN`) the prober only, as the file `USAGE_CLAUDE_TOKEN_FILE`; the orchestrator service token (`orchestrator.token` or `orchestrator.existingSecret`, key `token`) the watcher only, as the file `USAGE_ORCHESTRATOR_TOKEN_FILE`; the service and ingest token files the api only. No token is ever an env value.
+- `serviceListener` and `ingestListener` are off by default and need `tokensSecret.name`. The ingest Secret (`agents-usage-ingest`, key `token`) is created by agents-helmfile, never rendered here.
+- `env` takes extra `USAGE_*` settings only; there is no poll setting.
+
 ## Configuration
 
 Every process reads one validated `USAGE_*` environment. A bad or missing variable makes the process exit 78 at startup with one line per variable. The OAuth token and the database URL are never logged.
