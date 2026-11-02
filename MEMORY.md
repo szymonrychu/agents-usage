@@ -2,6 +2,14 @@
 
 Lessons that outlive a session. Newest first.
 
+## 2026-11-02 - plausibility bound on a window's resets_at
+
+- One bad or forged sample with a far-future `resets_at` became the current window for days (`current_view` keeps the newest reset per metric). `parser._windows` now drops a window whose reset is more than `MAX_RESET_AHEAD` (8 days) after the sample's observed time, or more than `RESET_PAST_SKEW` (60 s) before it, and logs one warning per sample with the count, metrics and resets. The rest of the sample is kept; a sample left with no window is the existing 422 `no_windows` (ingest) or an ok probe with no windows.
+- Both sources pass the same function: `windows_from_statusline` (observed = the server receive time, never a client clock) and `windows_from_event`/`parse_stream` (observed = the probe's `observed_at`). `observed_at` is a required argument so no caller can skip the bound. The `raw` column still keeps the posted body verbatim.
+- Ahead bound 8 days: the longest window is 7 days and `db.readings.WINDOW_LOOKBACK` is already 8 days, so a reset the lookback could not even see is never plausible. Boundaries are inclusive (exactly 8 days ahead and exactly 60 s behind are kept; "more than" is dropped).
+- Past skew 60 s, from the code's own conventions: windows are grouped by `date_trunc('minute', resets_at)` and the other short intervals are 60 s (`ProbeTrigger` min gap, the lowest `stale_seconds`), so a minute is the precision the service already works at; a statusLine posted as a window rolled over, or a pod clock a few seconds off, stays accepted. Anything older is a window that already ended (`current_view` drops it anyway).
+- Test clocks: the entrypoint tests and `fake_claude.py` (fixture mode) run on the real clock, so they now use a reset relative to now; fixed 2026-11-07 resets would have turned into past windows and failed after that date.
+
 ## 2026-11-01 - helm chart (claude-usage-monitor A5)
 
 - Three Deployments (api, prober, watcher) from one image, so each token reaches exactly one pod type: the claude OAuth token only the prober, the orchestrator service token only the watcher, the service and ingest token files only the api. All are mounted as files (Secret key projected to `token`/`tokens`) and the settings carry only the file paths; the migrate init container mounts nothing but `/tmp`.

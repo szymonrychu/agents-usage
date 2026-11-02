@@ -1,6 +1,7 @@
 """A stand-in for the claude CLI, driven by env FAKE_MODE (default `fixture`).
 
-- fixture: print the recorded haiku stream-json run and exit 0.
+- fixture: print the recorded haiku stream-json run and exit 0. Its `resetsAt` is moved to three
+  days from now: the parser drops a reset the real clock finds implausible.
 - hang: start a sleeping grandchild (its pid goes to FAKE_PID_FILE), print a partial line and
   sleep; only a process-group kill ends both.
 - flood: write 3 MiB to stdout and exit 0.
@@ -18,6 +19,7 @@ import time
 from pathlib import Path
 
 FIXTURE = Path(__file__).parent / "fixtures" / "haiku-2.1.304.jsonl"
+RECORDED_RESET = "1794049200"
 
 
 def _exec_env_keys() -> list[str]:
@@ -29,7 +31,8 @@ def main() -> int:
     mode = os.environ.get("FAKE_MODE", "fixture")
     token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
     if mode == "fixture":
-        sys.stdout.write(FIXTURE.read_text())
+        reset = str(int(time.time()) + 3 * 86400)
+        sys.stdout.write(FIXTURE.read_text().replace(RECORDED_RESET, reset))
         return 0
     if mode == "hang":
         child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])

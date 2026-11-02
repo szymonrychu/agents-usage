@@ -255,7 +255,7 @@ async def test_token_listeners_serve_behind_their_tokens(db_url: str, settings_f
     tokens = {"service": ["svc-test-token"], "ingest": ["ingest-test-token"]}
     stop = asyncio.Event()
     serving = asyncio.create_task(runtime._serve(settings, stop, tokens))
-    window = {"used_percentage": 23.5, "resets_at": 1794020400}
+    window = {"used_percentage": 23.5, "resets_at": int(time.time()) + 3600}
     body = {"agent": "agent-x-0", "cli_version": "2.1.304", "rate_limits": {"five_hour": window}}
     try:
         async with (
