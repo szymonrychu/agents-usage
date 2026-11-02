@@ -2,15 +2,30 @@
 
 Percent is on the 0-100 scale everywhere. The probe's `utilization` (0-1) is multiplied by 100
 here, once; the statusLine `used_percentage` (documented 0-100) is taken as is.
+
+A window whose `resets_at` is implausible against the time the sample was observed (more than
+`MAX_RESET_AHEAD` ahead, or more than `RESET_PAST_SKEW` behind) is dropped and logged; the rest of
+the sample is kept. Both sources go through the same bound.
 """
 
 import json
+import logging
 import math
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+
+log = logging.getLogger(__name__)
 
 MAX_PERCENT = 1000.0
+# The longest window is the 7-day one; a day more than the 7 days (the same 8 days as the readings
+# lookback) leaves room for a clock that runs ahead. Later than that is a bad or forged sample.
+MAX_RESET_AHEAD = timedelta(days=8)
+# A reset in the past is a window that already ended. A minute of skew is allowed: that is the
+# precision a window is grouped by (`date_trunc('minute', resets_at)`), so a sample posted as the
+# window rolled over is not counted as bad.
+RESET_PAST_SKEW = timedelta(seconds=60)
 
 _METRIC = re.compile(r"^[a-z0-9_]{1,64}$")
 
@@ -61,7 +76,36 @@ def _window(metric: object, percent: object, resets_at: object, scale: float) ->
     return Window(metric, round(scaled, 2), reset)
 
 
-def windows_from_event(rate_limit_info: dict) -> dict[str, Window]:
+def _plausible(reset: datetime, observed_at: datetime) -> bool:
+    return observed_at - RESET_PAST_SKEW <= reset <= observed_at + MAX_RESET_AHEAD
+
+
+def _windows(
+    entries: Iterable[tuple[object, object, object]], scale: float, observed_at: datetime
+) -> dict[str, Window]:
+    """The valid windows of `(metric, percent, resets_at)` entries whose reset is plausible
+    against `observed_at`; the dropped ones are logged once, with their count."""
+    built = (_window(metric, percent, resets_at, scale) for metric, percent, resets_at in entries)
+    kept: dict[str, Window] = {}
+    dropped: list[Window] = []
+    for window in built:
+        if window is None:
+            continue
+        if _plausible(window.resets_at, observed_at):
+            kept[window.metric] = window
+        else:
+            dropped.append(window)
+    if dropped:
+        log.warning(
+            "dropped %d window(s) with an implausible resets_at (observed %s): %s",
+            len(dropped),
+            observed_at.isoformat(),
+            ", ".join(f"{w.metric}={w.resets_at.isoformat()}" for w in dropped),
+        )
+    return kept
+
+
+def windows_from_event(rate_limit_info: dict, observed_at: datetime) -> dict[str, Window]:
     """Windows of a probe `rate_limit_info`: `unifiedWindows` (observed on 2.1.304, undocumented)
     when present, else the top-level `rateLimitType`/`utilization`/`resetsAt`."""
     if not isinstance(rate_limit_info, dict):
@@ -81,25 +125,22 @@ def windows_from_event(rate_limit_info: dict) -> dict[str, Window]:
                 rate_limit_info.get("resetsAt"),
             )
         ]
-    built = (
-        _window(metric, utilization, resets_at, 100.0) for metric, utilization, resets_at in entries
-    )
-    return {w.metric: w for w in built if w is not None}
+    return _windows(entries, 100.0, observed_at)
 
 
-def windows_from_statusline(rate_limits: object) -> dict[str, Window]:
+def windows_from_statusline(rate_limits: object, observed_at: datetime) -> dict[str, Window]:
     """Windows of the statusLine `rate_limits` (`used_percentage` 0-100, `resets_at` epoch)."""
     if not isinstance(rate_limits, dict):
         return {}
-    built = (
-        _window(metric, entry.get("used_percentage"), entry.get("resets_at"), 1.0)
+    entries = (
+        (metric, entry.get("used_percentage"), entry.get("resets_at"))
         for metric, entry in rate_limits.items()
         if isinstance(entry, dict)
     )
-    return {w.metric: w for w in built if w is not None}
+    return _windows(entries, 1.0, observed_at)
 
 
-def parse_stream(text: str) -> StreamResult:
+def parse_stream(text: str, observed_at: datetime) -> StreamResult:
     """Parse a `claude -p` stream-json run; lines that are not JSON objects are skipped.
 
     The last `rate_limit_event` and the last `result` line win.
@@ -120,7 +161,7 @@ def parse_stream(text: str) -> StreamResult:
         kind = obj.get("type")
         if kind == "rate_limit_event":
             event = obj
-            windows = windows_from_event(obj.get("rate_limit_info"))  # type: ignore[arg-type]
+            windows = windows_from_event(obj.get("rate_limit_info"), observed_at)  # type: ignore[arg-type]
         elif kind == "system" and obj.get("subtype") == "init":
             version = obj.get("claude_code_version")
             cli_version = version if isinstance(version, str) else cli_version

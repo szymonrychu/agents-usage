@@ -126,7 +126,7 @@ Body (at most 8192 bytes, checked while streaming; unknown keys are refused):
 ```
 
 - `agent`: optional, `^[A-Za-z0-9._-]{1,128}$`; `cli_version`: optional, at most 64 characters; `rate_limits`: the statusLine object as received.
-- `202 {"windows": n}`: n windows were stored. `413 too_large`: the body exceeds the cap. `422 no_windows`: no window in `rate_limits` was usable. `422 invalid_request`: any other bad body. `401`: no or a wrong ingest token.
+- `202 {"windows": n}`: n windows were stored. `413 too_large`: the body exceeds the cap. `422 no_windows`: no window in `rate_limits` was usable (a window whose `resets_at` is more than 8 days ahead of the receive time or more than 60 seconds before it is dropped and logged, the other windows are kept). `422 invalid_request`: any other bad body. `401`: no or a wrong ingest token.
 - The sample time is the server's receive time, never a client clock. `rate_limits` is kept verbatim as `raw`.
 - Bodies and tokens are never logged. Samples older than `USAGE_RETENTION_DAYS` are pruned after an insert, at most once an hour.
 

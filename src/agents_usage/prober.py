@@ -83,7 +83,7 @@ def _detail(text: str | None, secret: str) -> str | None:
 def to_record(started_at: datetime, observed_at: datetime, run: CliRun, token: str) -> ProbeRecord:
     """Classify one claude run: timeout, then a rate limit event (ok, whatever the exit code),
     then an error result line, then a non-zero exit, else no rate limit event."""
-    parsed = parse_stream(run.stdout)
+    parsed = parse_stream(run.stdout, observed_at)
     error: str | None
     detail: str | None = None
     if run.timed_out:

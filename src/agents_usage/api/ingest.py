@@ -105,14 +105,14 @@ async def _prune_if_due(state: IngestState, now: datetime) -> None:
 async def post_sample(request: Request) -> JSONResponse:
     state: IngestState = request.app.state.ingest
     sample = _parse(await _read_body(request))
-    windows = windows_from_statusline(sample.rate_limits)
+    now = state.now()
+    windows = windows_from_statusline(sample.rate_limits, now)
     if not windows:
         raise ApiError(422, "no_windows", "rate_limits holds no usable window")
     try:
         json.dumps(sample.rate_limits, allow_nan=False)
     except ValueError:
         raise ApiError(422, "invalid_request", "rate_limits: non-finite number") from None
-    now = state.now()
     record = samples.SampleRecord(
         now, sample.agent, sample.cli_version, sample.rate_limits, windows
     )

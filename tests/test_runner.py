@@ -5,6 +5,7 @@ import json
 import stat
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -88,7 +89,7 @@ async def test_run_cli_captures_stdout(tmp_path):
     assert run.timed_out is False
     assert run.stderr == ""
     assert run.duration_ms >= 0
-    parsed = parse_stream(run.stdout)
+    parsed = parse_stream(run.stdout, datetime.now(UTC))
     assert parsed.event is not None
     assert parsed.windows["seven_day"].percent == 22.0
 

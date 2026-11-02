@@ -205,3 +205,22 @@ def test_listener_tokens_distinct_files_ok(tmp_path, settings_for):
         ingest_tokens_file=str(ingest),
     )
     assert runtime._listener_tokens(cfg) == {"service": ["a"], "ingest": ["b"]}
+
+
+async def test_far_future_window_is_dropped_and_the_rest_kept(client_ingest, fake_samples):
+    forged = {"used_percentage": 99, "resets_at": int((FAKE_NOW + timedelta(days=400)).timestamp())}
+    body = {"rate_limits": {**RATE_LIMITS, "seven_day_opus": forged}}
+    response = await client_ingest.post(URL, json=body)
+    assert response.status_code == 202
+    assert response.json() == {"windows": 2}
+    (rec,) = fake_samples.records
+    assert set(rec.windows) == {"five_hour", "seven_day"}
+    assert rec.raw == body["rate_limits"]
+
+
+async def test_sample_with_only_implausible_windows_422(client_ingest, fake_samples):
+    forged = {"used_percentage": 99, "resets_at": int((FAKE_NOW + timedelta(days=400)).timestamp())}
+    response = await client_ingest.post(URL, json={"rate_limits": {"seven_day": forged}})
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "no_windows"
+    assert fake_samples.records == []
