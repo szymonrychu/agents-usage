@@ -63,7 +63,7 @@ The usage now, one entry per metric:
 
 - Per metric the newest window (the latest `resets_at`) is reported. Usage inside a window only grows, so `percent` is the highest reading of that window (readings of the same window are grouped by `resets_at` to the minute) and an idle agent's older re-send never lowers it. `observed_at` and `source` (`statusline` or `probe`) are those of the newest reading of the window.
 - A window that has reset (`resets_at` at or before now) is dropped; a metric with no live window is absent. Nothing yet gives `{"windows": {}, "last_sample": null, "last_probe": null}`.
-- `stale` is decided here, once: true when the reading is older than `USAGE_STALE_SECONDS`. Callers (the orchestrator's gate) trust it; a stale or absent metric never gates.
+- `stale` is decided here, once: true when the reading is older than `USAGE_STALE_SECONDS`. Callers (the orchestrator's gate) trust it. A stale window that already met the quota still gates (usage only grows until reset, so a stale percent is a lower bound); a stale reading below the quota, an absent metric and a reset window never gate.
 - `last_sample` is the newest statusLine sample (`agent` is null when the sender gave none). `last_probe` is the newest probe attempt, failed or not; `error` is `timeout`, `cli_exit`, `cli_error` or `no_rate_limit_event` when `ok` is false, never the stored detail.
 - On the service listener only, a call also sends a NOTIFY to the prober when the newest reading is older than `USAGE_PROBE_AFTER_SECONDS` or there is none (at most once a minute per process; the prober decides whether a probe is due). The notification is fire and forget: it never delays or fails the answer. The UI listener never wakes the prober.
 
