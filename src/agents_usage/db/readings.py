@@ -16,8 +16,9 @@ WINDOW_LOOKBACK = timedelta(days=8)
 
 @dataclass(frozen=True)
 class WindowGroup:
-    """The readings of one metric and one window (`resets_at` to the minute): the highest
-    percent, and the newest reading's time, source and exact reset."""
+    """The readings of one metric and one window (`resets_at` to the minute): the newest
+    reading's percent, time, source and exact reset (not the highest: an early reset can
+    lower usage inside the same window)."""
 
     metric: str
     resets_at: datetime
@@ -40,7 +41,7 @@ class PointRow:
 WINDOW_GROUPS_SQL = """
 SELECT metric,
        (array_agg(resets_at ORDER BY observed_at DESC))[1] AS resets_at,
-       max(percent) AS percent,
+       (array_agg(percent ORDER BY observed_at DESC))[1] AS percent,
        max(observed_at) AS observed_at,
        (array_agg(source ORDER BY observed_at DESC))[1] AS source
 FROM readings

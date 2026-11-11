@@ -90,3 +90,8 @@ Lessons that outlive a session. Newest first.
 - Order is `started_at, session_id` (the second key only makes ties stable); `limit` (1..2000, default 1000) keeps the oldest marks and `truncated` says more existed: the query fetches `limit + 1` rows and the route trims, so there is no second count query.
 - The statement uses `session_marks_started_at_idx` and the partial open/ended indexes; no EXPLAIN test (the table is small: one row per session, 90 days of retention).
 - The route is mounted on the UI and the service listeners like `current` and `history`; it does not wake the prober.
+
+## 2026-11-11 - current reports the newest reading's percent (T-122)
+
+- `WINDOW_GROUPS_SQL` took `max(percent)` per window on the belief that usage only grows inside a window. Anthropic issued an early bonus reset that lowered seven_day to 34% without changing `resets_at`, so `/current` kept reporting 92%. Percent is now the newest reading's (`array_agg(percent ORDER BY observed_at DESC)[1]`), same row as `observed_at` and `source`. `HISTORY_SQL` keeps its per-bucket peak downsampling.
+- Trade-off: an idle agent's stale re-send of an older, higher value inside the newest reading's window can no longer be masked by max; the newest observed reading wins.

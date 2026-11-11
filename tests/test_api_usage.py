@@ -74,15 +74,24 @@ async def test_current_reports_windows_sample_and_probe(client, pool):
     assert body["last_probe"] == {"at": body["last_probe"]["at"], "ok": False, "error": "timeout"}
 
 
-async def test_current_max_rule(client, pool):
+async def test_current_newest_reading_wins_in_a_window(client, pool):
     now = now_s()
     resets = now + timedelta(days=3)
     await add_sample(pool, now - timedelta(seconds=120), "agent-a", seven_day=(30.0, resets))
     await add_sample(pool, now - timedelta(seconds=60), "agent-b", seven_day=(25.0, resets))
     window = (await client.get(CURRENT)).json()["windows"]["seven_day"]
-    assert window["percent"] == 30.0
+    assert window["percent"] == 25.0
     assert parse(window["observed_at"]) == now - timedelta(seconds=60)
     assert window["source"] == "statusline"
+
+
+async def test_current_early_reset_lowers_percent_in_same_window(client, pool):
+    now = now_s()
+    resets = now + timedelta(days=3)
+    await add_sample(pool, now - timedelta(hours=3), seven_day=(92.0, resets))
+    await add_sample(pool, now - timedelta(minutes=1), seven_day=(34.0, resets))
+    window = (await client.get(CURRENT)).json()["windows"]["seven_day"]
+    assert window["percent"] == 34.0
 
 
 async def test_current_new_window_wins_after_reset(client, pool):
