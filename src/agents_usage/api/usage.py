@@ -49,9 +49,9 @@ def current_view(
     stale_seconds: int,
 ) -> CurrentView:
     """The answer of `current`. Per metric the newest window (the latest reset) is reported and
-    a window that has reset (`resets_at <= now`) is dropped: usage inside a window only grows,
-    so the highest reading of the newest window is the current one. `stale` is decided here, once;
-    the orchestrator trusts it."""
+    a window that has reset (`resets_at <= now`) is dropped. Within a window the newest reading
+    is the current one: an early reset can lower usage without changing `resets_at`. `stale` is
+    decided here, once; the orchestrator trusts it."""
     newest: dict[str, WindowGroup] = {}
     for group in groups:
         if group.resets_at <= now:

@@ -343,7 +343,7 @@
         "type": "object"
       },
       "WindowView": {
-        "description": "The current reading of one metric: the highest percent of its newest window.",
+        "description": "The current reading of one metric: the newest reading's percent in its newest window.",
         "properties": {
           "observed_at": {
             "format": "date-time",

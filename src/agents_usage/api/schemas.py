@@ -27,7 +27,7 @@ UtcDatetime = Annotated[datetime, AfterValidator(lambda value: value.astimezone(
 
 
 class WindowView(BaseModel):
-    """The current reading of one metric: the highest percent of its newest window."""
+    """The current reading of one metric: the newest reading's percent in its newest window."""
 
     percent: float
     resets_at: UtcDatetime
