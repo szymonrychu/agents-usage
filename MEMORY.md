@@ -95,3 +95,10 @@ Lessons that outlive a session. Newest first.
 
 - `WINDOW_GROUPS_SQL` took `max(percent)` per window on the belief that usage only grows inside a window. Anthropic issued an early bonus reset that lowered seven_day to 34% without changing `resets_at`, so `/current` kept reporting 92%. Percent is now the newest reading's (`array_agg(percent ORDER BY observed_at DESC)[1]`), same row as `observed_at` and `source`. `HISTORY_SQL` keeps its per-bucket peak downsampling.
 - Trade-off: an idle agent's stale re-send of an older, higher value inside the newest reading's window can no longer be masked by max; the newest observed reading wins.
+
+## 2026-11-15 - probe auth failures are auth_error (T-304, T-225)
+
+- The probe's `-p` result never carries `credential_expires_at` for our env token (research), so no date is parsed or stored.
+- A failed probe whose error result text or stderr names a credential failure (`AUTH_TEXTS` in `prober.py`, case and whitespace ignored) is `auth_error` instead of `cli_error` / `cli_exit`. The prober runs on the same Secret as the agents, so this is a fleet-wide signal even when no session runs.
+- A code, not a column: `probes.error` already holds the classification and `/current` already serves it as `last_probe.error`, so `openapi.json` and the response shape are unchanged. Migration 0002 only widens the `probes_error_check` constraint.
+- Timeout and a rate limit event still win over auth text.

@@ -47,7 +47,7 @@ def count(conn, table: str) -> int:
 
 def test_migrate_creates_tables(empty_db_url, settings_for):
     settings = settings_for(empty_db_url)
-    assert migrate(settings) == ["0001_init.sql"]
+    assert migrate(settings) == ["0001_init.sql", "0002_probe_auth_error.sql"]
     assert migrate(settings) == []
     with psycopg.connect(empty_db_url) as conn:
         names = lambda kind: {  # noqa: E731
@@ -105,6 +105,16 @@ def test_failed_probe_needs_error_and_ok_probe_must_not_have_one(conn):
         conn.execute(insert, (NOW, NOW, False, None))
     with pytest.raises(psycopg.errors.CheckViolation):
         conn.execute(insert, (NOW, NOW, True, "timeout"))
+
+
+def test_probe_auth_error_accepted(conn):
+    insert = (
+        "INSERT INTO probes (started_at, observed_at, ok, error, duration_ms) "
+        "VALUES (%s, %s, false, %s, 1)"
+    )
+    conn.execute(insert, (NOW, NOW, "auth_error"))
+    with pytest.raises(psycopg.errors.CheckViolation):
+        conn.execute(insert, (NOW, NOW, "bogus"))
 
 
 def mark(conn, session_id=None, origin="ui", started="2026-11-01T10:00:00Z", ended=None):

@@ -38,6 +38,17 @@ MIN_PARTIAL = 4
 TOKEN_UNREADABLE = "claude token file unreadable or empty"
 PRUNE_EVERY_SECONDS = 3600.0
 
+AUTH_TEXTS: tuple[str, ...] = (
+    "please run /login",
+    "oauth token revoked",
+    "oauth token has expired",
+    "login expired",
+    "reached its time limit",
+    "failed to authenticate",
+    "api error: 401",
+    "not logged in",
+)
+
 Run = Callable[[list[str], dict[str, str], str, float], Awaitable[CliRun]]
 Handle = Callable[[AsyncConnectionPool, Settings], Awaitable[bool]]
 
@@ -76,13 +87,22 @@ def _redact_json(value: Any, secret: str) -> Any:
     return value
 
 
+def is_auth_error(text: str | None) -> bool:
+    """True when `text` (case and whitespace ignored) contains one of `AUTH_TEXTS`."""
+    if not text:
+        return False
+    flat = " ".join(text.lower().split())
+    return any(marker in flat for marker in AUTH_TEXTS)
+
+
 def _detail(text: str | None, secret: str) -> str | None:
     return redact(text, secret) if text else None
 
 
 def to_record(started_at: datetime, observed_at: datetime, run: CliRun, token: str) -> ProbeRecord:
     """Classify one claude run: timeout, then a rate limit event (ok, whatever the exit code),
-    then an error result line, then a non-zero exit, else no rate limit event."""
+    then an error result line or a non-zero exit (`auth_error` when its text names a credential
+    failure, else `cli_error` / `cli_exit`), else no rate limit event."""
     parsed = parse_stream(run.stdout, observed_at)
     error: str | None
     detail: str | None = None
@@ -91,9 +111,11 @@ def to_record(started_at: datetime, observed_at: datetime, run: CliRun, token: s
     elif parsed.event is not None:
         error = None
     elif parsed.is_error:
-        error, detail = "cli_error", _detail(parsed.result_text, token)
+        error = "auth_error" if is_auth_error(parsed.result_text) else "cli_error"
+        detail = _detail(parsed.result_text, token)
     elif run.returncode != 0:
-        error, detail = "cli_exit", _detail(run.stderr, token)
+        error = "auth_error" if is_auth_error(run.stderr) else "cli_exit"
+        detail = _detail(run.stderr, token)
     else:
         error = "no_rate_limit_event"
     cli_version = parsed.cli_version

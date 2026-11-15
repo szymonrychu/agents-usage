@@ -48,9 +48,10 @@ def test_timeout_record():
 
 
 def test_cli_error_record():
-    stdout = json.dumps({"type": "result", "is_error": True, "result": "Not logged in"})
+    text = "API Error: 529 Overloaded"
+    stdout = json.dumps({"type": "result", "is_error": True, "result": text})
     rec = to_record(T0, T1, CliRun(1, stdout, "", 5, False), TOKEN)
-    assert (rec.ok, rec.error, rec.detail) == (False, "cli_error", "Not logged in")
+    assert (rec.ok, rec.error, rec.detail) == (False, "cli_error", text)
     assert rec.windows == {}
 
 
@@ -141,4 +142,35 @@ async def test_not_logged_in_child_record(tmp_path):
     env = {"FAKE_MODE": "not-logged-in", "CLAUDE_CODE_OAUTH_TOKEN": TOKEN}
     run = await run_cli([sys.executable, FAKE], env, str(tmp_path), 30)
     rec = to_record(T0, T1, run, TOKEN)
-    assert (rec.ok, rec.error, rec.detail) == (False, "cli_error", "Not logged in")
+    assert (rec.ok, rec.error, rec.detail) == (False, "auth_error", "Not logged in")
+
+
+def test_auth_error_from_result_text():
+    text = "OAuth token revoked \u00b7 Please run /login"
+    stdout = json.dumps({"type": "result", "is_error": True, "result": text})
+    rec = to_record(T0, T1, CliRun(1, stdout, "", 5, False), TOKEN)
+    assert (rec.ok, rec.error) == (False, "auth_error")
+    assert rec.detail == text
+
+
+def test_auth_error_from_stderr():
+    run = CliRun(1, "", "Failed to authenticate. API Error: 401", 5, False)
+    assert to_record(T0, T1, run, TOKEN).error == "auth_error"
+
+
+def test_timeout_wins_over_auth_text():
+    run = CliRun(None, "", "Not logged in", 5, True)
+    assert to_record(T0, T1, run, TOKEN).error == "timeout"
+
+
+def test_rate_limit_event_wins_over_auth_text():
+    rec = to_record(T0, T1, CliRun(1, HAIKU, "Not logged in", 5, False), TOKEN)
+    assert rec.ok is True
+
+
+def test_auth_error_detail_redacted():
+    canary = "CANARY-usage-0001"
+    run = CliRun(1, "", f"Not logged in {canary}", 5, False)
+    rec = to_record(T0, T1, run, canary)
+    assert rec.error == "auth_error"
+    assert canary not in rec.detail
