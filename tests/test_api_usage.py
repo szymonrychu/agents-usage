@@ -33,12 +33,12 @@ async def add_sample(pool, at, agent="agent-x-0", **windows):
         await samples.insert_sample(conn, rec)
 
 
-async def add_probe(pool, at, ok=True, **windows):
+async def add_probe(pool, at, ok=True, error="timeout", **windows):
     rec = probes.ProbeRecord(
         at,
         at,
         ok,
-        None if ok else "timeout",
+        None if ok else error,
         None,
         "2.1.304",
         None,
@@ -72,6 +72,12 @@ async def test_current_reports_windows_sample_and_probe(client, pool):
     assert body["last_sample"]["agent"] == "agent-a"
     assert parse(body["last_sample"]["at"]) == now - timedelta(seconds=30)
     assert body["last_probe"] == {"at": body["last_probe"]["at"], "ok": False, "error": "timeout"}
+
+
+async def test_current_serves_auth_error(client, pool):
+    await add_probe(pool, now_s() - timedelta(seconds=10), ok=False, error="auth_error")
+    last = (await client.get(CURRENT)).json()["last_probe"]
+    assert last["ok"] is False and last["error"] == "auth_error"
 
 
 async def test_current_newest_reading_wins_in_a_window(client, pool):
